@@ -1,0 +1,40 @@
+.welcome {
+  --welcome-primary: #111111;
+  --welcome-secondary: #ffffff;
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
+  min-height: 60vh;
+  padding: 40px 24px;
+  color: var(--welcome-primary);
+  background: linear-gradient(135deg, var(--welcome-secondary), #f2f2f2);
+  text-align: center;
+}
+
+.welcome-mark {
+  width: 76px;
+  height: 65px;
+  fill: var(--welcome-primary);
+}
+
+.welcome h1 {
+  margin: 0;
+  color: var(--welcome-primary);
+  font-size: clamp(36px, 6vw, 58px);
+  letter-spacing: -1.8px;
+}
+
+.welcome h1 span {
+  color: var(--welcome-primary);
+}
+
+.welcome p {
+  color: #555555;
+  font-size: clamp(16px, 2vw, 19px);
+}
+
+.welcome p strong {
+  color: var(--welcome-primary);
+}
