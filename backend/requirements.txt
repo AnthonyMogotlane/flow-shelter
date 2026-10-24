@@ -1,2 +1,21 @@
-fastapi
-uvicorn
+# Web framework and server
+fastapi==0.141.1
+uvicorn==0.52.1
+python-multipart==0.0.32
+
+# Validation and settings
+pydantic==2.13.4
+pydantic-settings==2.16.0
+email-validator==2.3.0
+python-dotenv==1.2.4
+
+# Database
+SQLAlchemy==2.1.6
+psycopg==3.3.6
+psycopg-binary==3.3.6
+
+# Authentication
+pwdlib==0.3.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
+pyjwt==2.15.1
