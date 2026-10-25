@@ -6,10 +6,16 @@ from app.api.endpoints import test
 from app.db.session import get_db
 
 from app.api.auth import router as auth_router
+from app.api.v1.router import router as v1_router
 
 app = FastAPI()
 
 app.include_router(auth_router)
+
+app.include_router(
+    v1_router,
+    prefix="/api",
+)
 
 app.include_router(
     test.router,
