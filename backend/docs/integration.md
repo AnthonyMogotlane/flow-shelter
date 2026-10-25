@@ -26,8 +26,11 @@ walk them through onboarding, and render their financial dashboard.
 | 5 | `PATCH` | `/api/onboarding` | ✓ | Save progress (any subset of sections) |
 | 6 | `PUT` | `/api/onboarding/step` | ✓ | Record which step the user is on |
 | 7 | `POST` | `/api/onboarding/complete` | ✓ | Validate and finalise onboarding |
-| 8 | `GET` | `/api/dashboard/overview` | ✓ | Dashboard data |
-| 9 | `GET` | `/api/dashboard/alerts` | ✓ | Alerts only |
+| 8 | `GET` | `/api/onboarding/commitments` | ✓ | Load the user's commitments |
+| 9 | `PUT` | `/api/onboarding/commitments` | ✓ | Replace the commitment list |
+| 10 | `GET` | `/api/dashboard/overview` | ✓ | Dashboard data |
+| 11 | `GET` | `/api/dashboard/upcoming` | ✓ | Unpaid commitments inside the forecast horizon |
+| 12 | `GET` | `/api/dashboard/alerts` | ✓ | Alerts only |
 
 Health checks (no auth): `GET /`, `GET /health`, `GET /health/database`.
 
@@ -415,9 +418,57 @@ Success `200`:
 }
 ```
 
+## 8. Commitments
+
+Essential bills ("What must you pay?"). Independent of the onboarding draft.
+
+### Load
+
+`GET /api/onboarding/commitments` → **200**
+
+```json
+{
+  "commitments": [
+    {
+      "id": 12,
+      "name": "Apartment rent",
+      "amount": "4500.00",
+      "due_date": "2026-11-01",
+      "is_paid": false
+    }
+  ]
+}
+```
+
+### Replace
+
+`PUT /api/onboarding/commitments` → **200** (`{"commitments": [...]}`)
+
+The body replaces the **entire** list — send everything that should remain.
+Send `{"commitments": []}` to clear it. Rows in the body must not include `id`.
+
+```json
+{
+  "commitments": [
+    { "name": "Apartment rent", "amount": "4500.00", "due_date": "2026-11-01" },
+    { "name": "Phone contract", "amount": "650.00", "is_paid": false }
+  ]
+}
+```
+
+| Field | Type | Rules |
+|---|---|---|
+| `name` | string | 1–100 characters |
+| `amount` | money | Greater than 0 |
+| `due_date` | date | Optional |
+| `is_paid` | bool | Default `false` |
+
+Every row is validated before anything is written: one bad row returns `422`
+and the saved list is left untouched.
+
 ---
 
-## 8. Dashboard overview
+## 9. Dashboard overview
 
 `GET /api/dashboard/overview` → **200**
 
@@ -462,7 +513,7 @@ Response `200`:
 | `currency` | string | From the profile; `"ZAR"` if not set |
 | `available_now` | money | `financial_balance.available_balance`, `"0.00"` if unset |
 | `projected_balance` | money | `available_now + expected income in horizon − unpaid commitments in horizon` |
-| `essential_commitments` | money | Unpaid commitments due within the horizon; `"0.00"` until a commitments feature exists |
+| `essential_commitments` | money | Unpaid commitments due within the horizon; `"0.00"` when there are none |
 | `next_expected_payment` | object \| null | Earliest `expected` income inside the horizon; `null` if none |
 | `savings_goals[].progress_percentage` | int | `saved / target × 100`, capped at `100` |
 | `alerts` | array | Same content as §9 |
@@ -525,3 +576,30 @@ Returns the `alerts` array from the overview, most urgent first.
 Match on `type`, never on `message` (messages are display text and may change).
 
 ---
+
+## 11. Upcoming commitments
+
+`GET /api/dashboard/upcoming` → **200**
+
+Unpaid commitments due within the forecast horizon
+(`FORECAST_HORIZON_DAYS`, default 30 days). Undated commitments are not included.
+
+```json
+{
+  "commitments": [
+    { "name": "Apartment rent", "amount": "4500.00", "due_date": "2026-11-01" }
+  ],
+  "total": "4500.00"
+}
+```
+
+`total` is the sum of `amount` across the listed rows.
+
+## Known gaps
+
+- No endpoint yet to mark a commitment paid or an expected income received;
+  `is_paid` and `status` are saved but cannot be changed after creation.
+- No transactions endpoint — the dashboard "Add transaction" button has no
+  backend yet.
+- Savings goals can only be created through `PATCH /api/onboarding` (which
+  replaces the whole list); there is no per-goal edit endpoint.

@@ -64,6 +64,25 @@ class SavingsGoalOut(SavingsGoalIn):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CommitmentIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    amount: Money = Field(gt=0)
+    due_date: Optional[date] = None
+    is_paid: bool = False
+
+
+class CommitmentOut(CommitmentIn):
+    id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommitmentsUpdate(BaseModel):
+    """Replaces the user's full list of essential commitments."""
+
+    commitments: list[CommitmentIn]
+
+
 class OnboardingPatch(BaseModel):
     """Partial draft. Only the sections present are written; collections are
     replaced. `current_step` is not accepted here — use
