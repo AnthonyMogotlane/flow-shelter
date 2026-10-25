@@ -428,9 +428,57 @@ Success `200`:
 }
 ```
 
+## 8. Commitments
+
+Essential bills ("What must you pay?"). Independent of the onboarding draft.
+
+### Load
+
+`GET /api/onboarding/commitments` → **200**
+
+```json
+{
+  "commitments": [
+    {
+      "id": 12,
+      "name": "Apartment rent",
+      "amount": "4500.00",
+      "due_date": "2026-11-01",
+      "is_paid": false
+    }
+  ]
+}
+```
+
+### Replace
+
+`PUT /api/onboarding/commitments` → **200** (`{"commitments": [...]}`)
+
+The body replaces the **entire** list — send everything that should remain.
+Send `{"commitments": []}` to clear it. Rows in the body must not include `id`.
+
+```json
+{
+  "commitments": [
+    { "name": "Apartment rent", "amount": "4500.00", "due_date": "2026-11-01" },
+    { "name": "Phone contract", "amount": "650.00", "is_paid": false }
+  ]
+}
+```
+
+| Field | Type | Rules |
+|---|---|---|
+| `name` | string | 1–100 characters |
+| `amount` | money | Greater than 0 |
+| `due_date` | date | Optional |
+| `is_paid` | bool | Default `false` |
+
+Every row is validated before anything is written: one bad row returns `422`
+and the saved list is left untouched.
+
 ---
 
-## 8. Dashboard overview
+## 9. Dashboard overview
 
 `GET /api/dashboard/overview` → **200**
 
@@ -475,7 +523,7 @@ Response `200`:
 | `currency` | string | From the profile; `"ZAR"` if not set |
 | `available_now` | money | `financial_balance.available_balance`, `"0.00"` if unset |
 | `projected_balance` | money | `available_now + expected income in horizon − unpaid commitments in horizon` |
-| `essential_commitments` | money | Unpaid commitments due within the horizon; `"0.00"` until a commitments feature exists |
+| `essential_commitments` | money | Unpaid commitments due within the horizon; `"0.00"` when there are none |
 | `next_expected_payment` | object \| null | Earliest `expected` income inside the horizon; `null` if none |
 | `savings_goals[].progress_percentage` | int | `saved / target × 100`, capped at `100` |
 | `alerts` | array | Same content as §9 |
