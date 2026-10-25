@@ -20,6 +20,8 @@ class FinancialProfileIn(BaseModel):
     income_pattern: Optional[Literal["fixed", "irregular", "mixed"]] = None
     typical_income: Optional[Money] = Field(default=None, ge=0)
     currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    # Planned monthly saving shown in the monthly cash flow. A plan only.
+    savings_plan_amount: Optional[Money] = Field(default=None, ge=0)
 
 
 class FinancialProfileOut(FinancialProfileIn):
