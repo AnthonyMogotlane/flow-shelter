@@ -4,6 +4,9 @@ Everything visual comes from `theme.py`: no raw hex colour or magic font
 size should appear in a screen module.
 """
 
+from i18n import t
+from i18n import translated_server_text
+
 import asyncio
 from datetime import date, datetime
 
@@ -18,12 +21,17 @@ from theme import (
     BUTTON_H,
     CAPTION_SIZE,
     CARD_VALUE,
+    CARD_SHADOW,
     ERROR,
     HEADING,
     INK,
     INPUT_SIZE,
     MUTED,
     NOTE_BG,
+    MINT,
+    PRIMARY,
+    PRIMARY_DARK,
+    ON_PRIMARY,
     PAD,
     PAGE_PAD,
     RADIUS,
@@ -43,6 +51,7 @@ from theme import (
     caption,
     logo,
     reduce_motion,
+    duration,
     style_input,
 )
 
@@ -60,6 +69,10 @@ def chrome_theme() -> ft.Theme:
     """
 
     return ft.Theme(
+        color_scheme=ft.ColorScheme(
+            primary=PRIMARY, on_primary=SURFACE, surface=SURFACE,
+            on_surface=INK, error=ERROR, outline=BORDER,
+        ),
         navigation_bar_theme=ft.NavigationBarTheme(
             label_text_style={
                 ft.ControlState.DEFAULT: ft.TextStyle(
@@ -69,7 +82,34 @@ def chrome_theme() -> ft.Theme:
                     size=CAPTION_SIZE - 1, weight=ft.FontWeight.W_600, color=INK
                 ),
             },
-        )
+        ),
+        page_transitions=ft.PageTransitionsTheme(
+            android=(
+                ft.PageTransitionTheme.NONE
+                if reduce_motion()
+                else ft.PageTransitionTheme.FADE_UPWARDS
+            ),
+            ios=(
+                ft.PageTransitionTheme.NONE
+                if reduce_motion()
+                else ft.PageTransitionTheme.CUPERTINO
+            ),
+            linux=(
+                ft.PageTransitionTheme.NONE
+                if reduce_motion()
+                else ft.PageTransitionTheme.ZOOM
+            ),
+            macos=(
+                ft.PageTransitionTheme.NONE
+                if reduce_motion()
+                else ft.PageTransitionTheme.ZOOM
+            ),
+            windows=(
+                ft.PageTransitionTheme.NONE
+                if reduce_motion()
+                else ft.PageTransitionTheme.ZOOM
+            ),
+        ),
     )
 
 
@@ -169,6 +209,16 @@ def set_error(control: ft.Text, message: str | None, page: ft.Page) -> None:
     page.update()
 
 
+def validate_fields(page, rules) -> bool:
+    """Render errors next to their fields, clearing previous validation."""
+    valid = True
+    for control, message in rules:
+        control.error_text = message
+        valid = valid and not message
+    page.update()
+    return valid
+
+
 def submit_button(label: str, on_click, expand: bool = True) -> ft.FilledButton:
     """Primary button that swaps its label for a spinner while a request runs.
 
@@ -178,26 +228,35 @@ def submit_button(label: str, on_click, expand: bool = True) -> ft.FilledButton:
 
     button = ft.FilledButton(
         content=ft.Text(label),
-        bgcolor=INK,
+        bgcolor=PRIMARY,
         color=BG,
         height=BUTTON_H,
         expand=expand,
+        style=ft.ButtonStyle(
+            animation_duration=duration(),
+            text_style=ft.TextStyle(size=BODY, weight=ft.FontWeight.W_600),
+            shape=ft.RoundedRectangleBorder(radius=RADIUS),
+        ),
         on_click=on_click,
     )
     button.data = {"label": label}  # type: ignore[attr-defined]
     return button
 
 
-def set_busy(button: ft.Control, busy: bool) -> None:
+def set_busy(button: ft.Control, busy: bool, busy_label: str = t('Saving')) -> None:
     """Swap a `submit_button`'s label for a spinner, and back again."""
 
     label = (getattr(button, "data", None) or {}).get("label", "")
     if busy:
-        button.content = ft.Row(
-            alignment=ft.MainAxisAlignment.CENTER,
-            controls=[
-                ft.ProgressRing(width=16, height=16, stroke_width=2, color=BG),
-            ],
+        button.content = ft.Semantics(
+            label=busy_label,
+            live_region=True,
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.CENTER,
+                controls=[
+                    ft.ProgressRing(width=16, height=16, stroke_width=2, color=BG),
+                ],
+            ),
         )
     else:
         button.content = ft.Text(label)
@@ -240,9 +299,10 @@ def top_bar(on_save_exit=None, right_text: str | None = None) -> ft.Row:
 
     if on_save_exit is not None:
         right: ft.Control = ft.TextButton(
-            content=ft.Text("Save & exit", size=BODY_SM, color=INK),
+            content=ft.Text(t('Save & exit'), size=BODY_SM, color=INK),
             style=ft.ButtonStyle(
-                overlay_color=ft.Colors.TRANSPARENT,
+                overlay_color={ft.ControlState.FOCUSED: BORDER,
+                               ft.ControlState.PRESSED: NOTE_BG},
                 padding=ft.Padding.symmetric(horizontal=0),
             ),
             on_click=on_save_exit,
@@ -269,9 +329,9 @@ def progress_header(step: int, total: int = 5) -> ft.Control:
             ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 controls=[
-                    ft.Text("Set up your plan", size=BODY_SM, color=INK),
+                    ft.Text(t('Set up your plan'), size=BODY_SM, color=INK),
                     ft.Text(
-                        f"Step {step} of {total}",
+                        t('Step {v0} of {v1}', v0=step, v1=total),
                         size=BODY_SM,
                         weight=ft.FontWeight.W_600,
                         color=INK,
@@ -321,13 +381,15 @@ def card(content: ft.Control, padding: int = SPACE_L) -> ft.Container:
         bgcolor=SURFACE,
         border=ft.Border.all(1, BORDER),
         border_radius=RADIUS,
+        shadow=ft.BoxShadow(blur_radius=16, spread_radius=0,
+                            color=CARD_SHADOW, offset=ft.Offset(0, 3)),
         padding=padding,
         content=content,
     )
 
 
-def tappable(control: ft.Container, on_click) -> ft.Container:
-    """Make a card an obvious target: a press ripple and pointer cursor.
+def tappable(control: ft.Container, on_click, label: str) -> ft.Semantics:
+    """Give a clickable card touch feedback and an accessible button label.
 
     Ripples are Material's own pressed feedback, so this keeps the card in
     step with buttons; reduced motion turns them off.
@@ -335,7 +397,13 @@ def tappable(control: ft.Container, on_click) -> ft.Container:
 
     control.on_click = on_click
     control.ink = not reduce_motion()
-    return control
+    return ft.Semantics(
+        content=control,
+        label=label,
+        button=True,
+        focusable=True,
+        on_tap=on_click,
+    )
 
 
 def onboarding_view(
@@ -384,10 +452,10 @@ def onboarding_view(
 # Tab chrome (Overview, Cash flow, Transactions, Goals)
 # ---------------------------------------------------------------------------
 TAB_ITEMS = [
-    ("overview", "Overview", ft.Icons.HOME_OUTLINED),
-    ("cashflow", "Cash flow", ft.Icons.INSIGHTS_OUTLINED),
-    ("transactions", "Transactions", ft.Icons.SWAP_VERT_OUTLINED),
-    ("goals", "Goals", ft.Icons.FLAG_OUTLINED),
+    ("overview", t('Overview'), ft.Icons.HOME_OUTLINED),
+    ("cashflow", t('Cash flow'), ft.Icons.INSIGHTS_OUTLINED),
+    ("transactions", t('Transactions'), ft.Icons.SWAP_VERT_OUTLINED),
+    ("goals", t('Goals'), ft.Icons.FLAG_OUTLINED),
 ]
 
 # Each tab paints its own icon when active, matching the wireframes.
@@ -406,12 +474,42 @@ def initials(overview: dict | None) -> str:
     name = (user.get("name") or "").strip()
     parts = [p for p in name.split() if p]
     if not parts:
-        return "?"
-    return "".join(p[0].upper() for p in parts[:2])
+        return (user.get("email") or "")[:1].upper()
+    return (parts[0][0] + parts[-1][0]).upper() if len(parts) > 1 else parts[0][0].upper()
+
+
+def account_user(app) -> dict:
+    return getattr(app, "profile_user", {}) or (app.overview or {}).get("user") or {}
+
+
+class ProfileAvatar(ft.TextButton):
+    """Update initials when account data arrives after the header is built."""
+
+    def __init__(self, app):
+        self.app = app
+        super().__init__(
+            width=44, height=44, tooltip=t('Open profile'),
+            style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                 shape=ft.CircleBorder()),
+            on_click=lambda e: app.page.run_task(app.open_profile),
+            content=ft.Container(
+                width=36, height=36, bgcolor=MINT, border_radius=18,
+                alignment=ft.Alignment.CENTER,
+            ),
+        )
+        self.before_update()
+
+    def before_update(self):
+        user = account_user(self.app)
+        text = initials({"user": user})
+        self.content.content = (
+            ft.Text(text, size=BODY_SM, weight=ft.FontWeight.W_600, color=PRIMARY)
+            if text else ft.Icon(ft.Icons.PERSON_OUTLINE, size=20, color=PRIMARY)
+        )
 
 
 def tab_top_bar(title: str, app, theme_icon=None, on_back=None) -> ft.Row:
-    """'FLOWSHELTER / <title>' on the left; theme, avatar (and back) right."""
+    """Brand on tab screens; contextual title and Back on secondary screens."""
 
     left: list[ft.Control] = []
     if on_back is not None:
@@ -420,15 +518,16 @@ def tab_top_bar(title: str, app, theme_icon=None, on_back=None) -> ft.Row:
                 icon=ft.Icons.ARROW_BACK,
                 icon_size=20,
                 icon_color=INK,
-                tooltip="Back",
+                tooltip=t('Back'),
                 on_click=on_back,
             )
         )
     left.append(
-        ft.Column(
+        logo() if on_back is None else ft.Column(
+            expand=True,
             spacing=0,
             controls=[
-                ft.Text("FLOWSHELTER", size=CAPTION_SIZE - 2, color=MUTED),
+                ft.Text(t('FLOWSHELTER'), size=CAPTION_SIZE - 2, color=MUTED),
                 ft.Text(
                     title, size=SUBHEAD, weight=ft.FontWeight.W_600, color=INK
                 ),
@@ -441,6 +540,7 @@ def tab_top_bar(title: str, app, theme_icon=None, on_back=None) -> ft.Row:
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
         controls=[
             ft.Row(
+                expand=True,
                 spacing=SPACE_XS,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=left,
@@ -448,20 +548,7 @@ def tab_top_bar(title: str, app, theme_icon=None, on_back=None) -> ft.Row:
             ft.Row(
                 spacing=SPACE_M,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    theme_icon
-                    or ft.Icon(ft.Icons.WB_SUNNY_OUTLINED, size=18, color=INK),
-                    ft.Container(
-                        width=30,
-                        height=30,
-                        bgcolor=BORDER,
-                        border_radius=15,
-                        alignment=ft.Alignment.CENTER,
-                        content=ft.Text(
-                            initials(app.overview), size=CAPTION_SIZE, color=INK
-                        ),
-                    ),
-                ],
+                controls=([theme_icon] if theme_icon is not None else []) + [ProfileAvatar(app)],
             ),
         ],
     )
@@ -479,7 +566,7 @@ def bottom_nav(active: str, on_select) -> ft.Control:
         selected_index=index,
         on_change=lambda e: on_select(TAB_KEYS[int(e.control.selected_index)]),
         bgcolor=SURFACE,
-        indicator_color=BORDER,
+        indicator_color=MINT,
         label_behavior=ft.NavigationBarLabelBehavior.ALWAYS_SHOW,
         height=64,
         destinations=[
@@ -555,7 +642,7 @@ def skeleton_page(title_width: int = 190, cards: int = 3) -> ft.Column:
                 spacing=SPACE_S - 2,
                 controls=[
                     skeleton_block(TITLE - 6, width=title_width),
-                    skeleton_block(BODY, width=int(title_width * 1.6)),
+                    skeleton_block(BODY),
                 ],
             ),
             *[skeleton_card(3 if index == 0 else 2) for index in range(cards)],
@@ -591,6 +678,7 @@ def tab_view(
     skeleton = skeleton_body()
     body_slot = ft.Column(
         expand=True,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         spacing=0,
         visible=not loading,
         scroll=ft.ScrollMode.AUTO,
@@ -605,6 +693,12 @@ def tab_view(
         route=route,
         bgcolor=BG,
         padding=0,
+        spacing=0,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        navigation_bar=(
+            bottom_nav(active, lambda key: page.run_task(app.open_tab, key))
+            if show_nav else None
+        ),
         controls=[
             ft.Container(
                 padding=ft.Padding.symmetric(
@@ -617,15 +711,10 @@ def tab_view(
                 spacing=0,
                 controls=[body_slot, skeleton],
             ),
-            ft.Container(
-                visible=show_nav,
-                content=bottom_nav(
-                    active, lambda key: page.run_task(app.open_tab, key)
-                ),
-            ),
         ],
-        # The view itself never scrolls, so the nav cannot be pushed offscreen.
-        scroll=ft.ScrollMode.HIDDEN,
+        # HIDDEN still enables scrolling; None keeps the outer view fixed.
+        # The native navigation slot stays pinned below the scrollable body.
+        scroll=None,
     )
     # Screens reach in through these to drive their own loading state; Flet
     # controls accept arbitrary attributes.
@@ -714,6 +803,127 @@ class LoadingState:
         self.skeleton.visible = False
 
 
+class LatestRequest:
+    """Serialize identical refreshes and let only the latest filter result paint."""
+
+    def __init__(self):
+        self.revision = 0
+        self.pending: dict[tuple, int] = {}
+        self.key = None
+
+    def begin(self, key: tuple) -> int | None:
+        if key == self.key and key in self.pending:
+            return None
+        self.revision += 1
+        self.key = key
+        self.pending[key] = self.revision
+        return self.revision
+
+    def current(self, revision: int) -> bool:
+        return revision == self.revision
+
+    def finish(self, key: tuple, revision: int) -> None:
+        if self.pending.get(key) == revision:
+            self.pending.pop(key, None)
+
+
+def action_row(*buttons: ft.Control) -> ft.ResponsiveRow:
+    """Stack actions on small phones; share the row when there is room."""
+    return ft.ResponsiveRow(
+        breakpoints={"xs": 0, "sm": 380},
+        spacing=SPACE_S, run_spacing=SPACE_S,
+        controls=[
+            ft.Column(col={"xs": 12, "sm": 12 / len(buttons)},
+                      horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                      controls=[button])
+            for button in buttons
+        ],
+    )
+
+
+class FormGuard:
+    """Keep edits on cancel/system back unless the user explicitly discards them."""
+
+    def __init__(self, page, snapshot, leave, busy):
+        self.page, self.snapshot, self.leave, self.busy = page, snapshot, leave, busy
+        self.initial = snapshot()
+        self.dialog = None
+
+    def request_leave(self):
+        if self.busy() or self.dialog is not None:
+            return
+        if self.snapshot() == self.initial:
+            self.page.run_task(self.leave)
+            return
+
+        def close(e=None):
+            self.page.pop_dialog()
+            self.dialog = None
+
+        def discard(e):
+            close()
+            self.page.run_task(self.leave)
+
+        self.dialog = ft.AlertDialog(
+            modal=True, title=ft.Text(t('Discard your changes?')),
+            content=ft.Text(t('Your changes have not been saved.')),
+            actions=[
+                ft.TextButton(t("Keep editing"), on_click=close),
+                ft.TextButton(t("Discard changes"), on_click=discard),
+            ],
+        )
+        self.page.show_dialog(self.dialog)
+
+
+def savings_progress(goal: dict, currency: str) -> ft.Column:
+    """Truthful progress and the next milestone, shared by overview and goals."""
+    from decimal import Decimal
+    from theme import money
+
+    progress = max(0.0, float(goal.get("progress_percentage") or 0))
+    target = Decimal(str(goal.get("target_amount") or 0))
+    saved = Decimal(str(goal.get("saved_amount") or 0))
+    next_band = next((band for band in (25, 50, 75, 100) if progress < band), None)
+    message = t('Goal reached · Based on your recorded savings')
+    if next_band is not None:
+        remaining = max(Decimal(0), target * Decimal(next_band) / 100 - saved)
+        message = t('{v0} to your {v1}% milestone', v0=money(remaining, currency), v1=next_band)
+    return ft.Column(spacing=SPACE_S, controls=[
+        ft.Semantics(
+            label=t('Savings progress: {v0} percent', v0=round(progress)),
+            value=f"{round(progress)}%", exclude_semantics=True,
+            content=ft.ProgressBar(value=min(progress / 100, 1), color=SUCCESS,
+                                   bgcolor=BORDER, bar_height=8, border_radius=4),
+        ),
+        ft.Text(t('{v0} saved of {v1}', v0=money(saved, currency), v1=money(target, currency)),
+                size=BODY_SM, color=MUTED),
+        ft.Row(spacing=SPACE_S, controls=[
+            ft.Semantics(
+                expand=True,
+                label=t('{v0}% milestone, ', v0=band) + (t('reached') if progress >= band else t('ahead')),
+                exclude_semantics=True,
+                content=ft.Container(
+                    padding=ft.Padding.symmetric(vertical=SPACE_S),
+                    border_radius=RADIUS_SM,
+                    bgcolor=MINT if progress >= band else NOTE_BG,
+                    content=ft.Column(
+                        spacing=SPACE_XS,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE if progress >= band
+                                    else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                                    size=18, color=PRIMARY if progress >= band else MUTED),
+                            ft.Text(t('{v0}%', v0=band), size=CAPTION_SIZE,
+                                    color=PRIMARY if progress >= band else MUTED),
+                        ],
+                    ),
+                ),
+            ) for band in (25, 50, 75, 100)
+        ]),
+        ft.Text(message, size=BODY_SM, color=SUCCESS),
+    ])
+
+
 def padded(control: ft.Control) -> ft.Container:
     """The standard body inset inside a tab screen."""
 
@@ -726,39 +936,72 @@ def padded(control: ft.Control) -> ft.Container:
 # ---------------------------------------------------------------------------
 # Content pieces
 # ---------------------------------------------------------------------------
-def segmented(options: list[tuple[str, str]], value: str, on_select) -> ft.Container:
-    """A small pill group, e.g. 'Until next payment | Monthly' or
-    'All | Income | Expenses'. `options` is (key, label) pairs."""
+def segmented(
+    options: list[tuple[str, str]], value: str, on_select
+) -> ft.Container:
+    """Accessible single-choice control for filters and view modes."""
 
-    segments = []
-    for key, label in options:
-        selected = key == value
-        segments.append(
-            ft.Container(
-                bgcolor=INK if selected else SURFACE,
-                border_radius=RADIUS_SM,
-                # 28px of text plus the padding keeps the tap target ~44px.
-                padding=ft.Padding.symmetric(
-                    horizontal=SPACE_M + 2, vertical=SPACE_M - 2
-                ),
-                content=ft.Text(
-                    label,
-                    size=BODY_SM,
-                    weight=ft.FontWeight.W_600 if selected else None,
-                    color=BG if selected else INK,
-                ),
-                on_click=None if selected else (lambda e, k=key: on_select(k)),
-                # A tooltip gives the pill a hover/screen-reader name; the
-                # selected segment has no click handler, so assistive tech
-                # reads it as the current choice rather than an action.
-                tooltip=label,
-            )
+    segments: list[tuple[str, str]] = []
+    buttons: list[ft.Button] = []
+    semantics: list[ft.Semantics] = []
+
+    def select(key: str, e) -> None:
+        for (segment_key, label), button, semantic in zip(
+            segments, buttons, semantics
+        ):
+            is_selected = segment_key == key
+            button.bgcolor = PRIMARY if is_selected else SURFACE
+            button.color = BG if is_selected else INK
+            semantic.label = t("{v0}, selected", v0=label) if is_selected else label
+            semantic.selected = is_selected
+
+        page = e.control.page
+        if page is not None:
+            page.update(*buttons, *semantics)
+        on_select(key)
+
+    controls: list[ft.Control] = []
+    for index, (key, label) in enumerate(options):
+        button = ft.Button(
+            content=label,
+            color=BG if key == value else INK,
+            bgcolor=PRIMARY if key == value else SURFACE,
+            height=BUTTON_H,
+            expand=True,
+            elevation=0,
+            style=ft.ButtonStyle(
+                animation_duration=duration(),
+                padding=ft.Padding.symmetric(horizontal=12),
+                side=ft.BorderSide(0, BORDER),
+                shape=ft.RoundedRectangleBorder(radius=0),
+            ),
+            on_click=lambda e, selected_key=key: select(selected_key, e),
         )
+        semantic = ft.Semantics(
+            content=button,
+            expand=True,
+            label=t('{v0}, selected', v0=label) if key == value else label,
+            button=True,
+            focusable=True,
+            selected=key == value,
+        )
+        segments.append((key, label))
+        buttons.append(button)
+        semantics.append(semantic)
+
+        if index:
+            controls.append(
+                ft.Container(width=1, height=BUTTON_H, bgcolor=BORDER)
+            )
+        controls.append(semantic)
+
     return ft.Container(
+        width=float("inf"),
+        height=BUTTON_H,
         border=ft.Border.all(1, BORDER),
         border_radius=RADIUS,
-        padding=3,
-        content=ft.Row(spacing=0, controls=segments),
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+        content=ft.Row(spacing=0, controls=controls),
     )
 
 
@@ -778,22 +1021,48 @@ def stat_card(
     value: str,
     detail: str | None = None,
     size: int = CARD_VALUE,
+    *,
+    featured: bool = False,
+    icon=None,
 ) -> ft.Container:
     """A labelled money figure. `size` lets tight rows use the small scale."""
 
+    label_control = ft.Text(label.upper(), size=CAPTION_SIZE,
+                           weight=ft.FontWeight.W_600,
+                           color=ON_PRIMARY if featured else MUTED)
     controls: list[ft.Control] = [
-        caption(label.upper()),
+        ft.Row(controls=[
+            ft.Container(
+                width=36, height=36, border_radius=12,
+                bgcolor=PRIMARY_DARK if featured else MINT,
+                alignment=ft.Alignment.CENTER,
+                content=ft.Icon(icon, size=19, color=SURFACE if featured else PRIMARY),
+            ),
+            ft.Container(content=label_control, expand=True),
+        ], spacing=SPACE_M) if icon is not None else label_control,
         ft.Text(value, size=size, weight=ft.FontWeight.W_700, color=INK),
     ]
+    if featured:
+        controls[-1].color = SURFACE
     if detail:
-        controls.append(ft.Text(detail, size=BODY_SM, color=MUTED))
-    return card(
+        controls.append(ft.Text(detail, size=BODY_SM,
+                                color=ON_PRIMARY if featured else MUTED))
+    result = card(
         ft.Column(
-            spacing=SPACE_S - 2,
+            spacing=SPACE_M,
             horizontal_alignment=ft.CrossAxisAlignment.START,
             controls=controls,
-        )
+        ),
+        padding=SPACE_XL if featured else SPACE_L,
     )
+    if featured:
+        result.bgcolor = PRIMARY
+        result.gradient = ft.LinearGradient(
+            begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+            colors=[PRIMARY, PRIMARY_DARK],
+        )
+        result.border = None
+    return result
 
 
 def figure(label: str, value: str) -> ft.Column:
@@ -825,7 +1094,11 @@ def empty_state(
     """A quiet card explaining why a list is empty, with an optional action."""
 
     controls: list[ft.Control] = [
-        ft.Icon(icon, size=28, color=MUTED),
+        ft.Container(
+            width=64, height=64, border_radius=22,
+            bgcolor=MINT, alignment=ft.Alignment.CENTER,
+            content=ft.Icon(icon, size=30, color=PRIMARY),
+        ),
         ft.Text(
             title,
             size=SUBHEAD,
@@ -864,9 +1137,10 @@ def error_card(message: str, on_retry=None) -> ft.Container:
     if on_retry is not None:
         controls.append(
             ft.TextButton(
-                content=ft.Text("Try again", size=BODY_SM, color=INK),
+                content=ft.Text(t('Try again'), size=BODY_SM, color=INK),
                 style=ft.ButtonStyle(
-                    overlay_color=ft.Colors.TRANSPARENT,
+                    overlay_color={ft.ControlState.FOCUSED: BORDER,
+                               ft.ControlState.PRESSED: NOTE_BG},
                     padding=ft.Padding.symmetric(
                         horizontal=0, vertical=SPACE_S
                     ),
@@ -902,7 +1176,7 @@ def alert_banner(alert: dict, on_review=None) -> ft.Container:
             expand=True,
             controls=[
                 ft.Text(
-                    alert.get("message") or "Something needs your attention.",
+                    translated_server_text(alert.get("message")) or t('Something needs your attention.'),
                     size=BODY,
                     weight=ft.FontWeight.W_600,
                     color=INK,
@@ -913,9 +1187,10 @@ def alert_banner(alert: dict, on_review=None) -> ft.Container:
     if on_review is not None:
         controls.append(
             ft.TextButton(
-                content=ft.Text("Review", size=BODY_SM, color=INK),
+                content=ft.Text(t('Review'), size=BODY_SM, color=INK),
                 style=ft.ButtonStyle(
-                    overlay_color=ft.Colors.TRANSPARENT,
+                    overlay_color={ft.ControlState.FOCUSED: BORDER,
+                               ft.ControlState.PRESSED: NOTE_BG},
                     padding=ft.Padding.symmetric(
                         horizontal=SPACE_S, vertical=SPACE_S
                     ),
@@ -936,8 +1211,8 @@ def alert_banner(alert: dict, on_review=None) -> ft.Container:
     )
 
 
-def nav_footer(on_back=None, on_continue=None, continue_label="Continue",
-               back_label="Back", skip_label: str | None = None,
+def nav_footer(on_back=None, on_continue=None, continue_label=t('Continue'),
+               back_label=t('Back'), skip_label: str | None = None,
                submit: ft.Control | None = None) -> ft.Row:
     """Bottom row: optional secondary button on the left, primary on the right.
 
@@ -951,7 +1226,8 @@ def nav_footer(on_back=None, on_continue=None, continue_label="Continue",
             ft.TextButton(
                 content=ft.Text(skip_label, size=BODY_SM, color=INK),
                 style=ft.ButtonStyle(
-                    overlay_color=ft.Colors.TRANSPARENT,
+                    overlay_color={ft.ControlState.FOCUSED: BORDER,
+                               ft.ControlState.PRESSED: NOTE_BG},
                     padding=ft.Padding.symmetric(horizontal=0),
                 ),
                 on_click=on_back,

@@ -1,20 +1,27 @@
 """Shared colours, spacing and formatting for every screen.
 
-Mirrors the Figma wireframes: warm off-white canvas, near-black ink for
-primary actions, muted grey-green for secondary text, and thin grey borders.
+Warm off-white canvas, forest-green actions, mint accents and soft surfaces.
+Near-black ink and muted grey-green keep financial information readable.
 """
+
+from i18n import t
 
 import flet as ft
 
 # ---- colour ---------------------------------------------------------------
 # MUTED is one step darker than the wireframe grey so secondary text clears
 # WCAG AA (4.5:1) on both BG and SURFACE.
-BG = "#F5F7F2"
+BG = "#F6F7F2"
 SURFACE = "#FFFFFF"
 INK = "#1B2A23"
 MUTED = "#57655D"
-BORDER = "#D5DCD5"
-NOTE_BG = "#ECEFEA"
+BORDER = "#DDE5DC"
+NOTE_BG = "#EDF3EC"
+PRIMARY = "#245D46"
+PRIMARY_DARK = "#173F32"
+MINT = "#E5F1E8"
+ON_PRIMARY = "#D8EBDD"
+CARD_SHADOW = "#091B2A23"
 WARN_BG = "#F3EFE2"
 ERROR = "#B3261E"
 SUCCESS = "#2E6B4F"
@@ -25,8 +32,8 @@ ON_INK = "#D5DCD5"
 ON_INK_MUTED = "#A9B5AD"
 
 # ---- shape ----------------------------------------------------------------
-RADIUS = 8
-RADIUS_SM = 6
+RADIUS = 14
+RADIUS_SM = 8
 RADIUS_PILL = 999
 PAD = 20
 
@@ -51,7 +58,7 @@ CARD_VALUE = 30
 CARD_VALUE_SM = 15
 INPUT_SIZE = 15
 
-BUTTON_H = 46
+BUTTON_H = 48
 MIN_TOUCH = 44
 
 # ---- motion ---------------------------------------------------------------
@@ -112,7 +119,7 @@ def short_date(iso_date) -> str:
         d = date.fromisoformat(str(iso_date)[:10])
     except ValueError:
         return str(iso_date)
-    return f"{d.day:02d} {d:%b}"
+    return t("{v0} {v1}", v0=f"{d.day:02d}", v1=t(d.strftime("%b")))
 
 
 def month_label(month: str) -> str:
@@ -123,7 +130,7 @@ def month_label(month: str) -> str:
         from datetime import date
 
         name = date(int(year), int(mon), 1).strftime("%B")
-        return f"{name} {year}".upper()
+        return t("{v0} {v1}", v0=t(name), v1=year).upper()
     except (ValueError, AttributeError):
         return str(month or "")
 
@@ -146,14 +153,14 @@ def format_date(iso_date) -> str:
     """'2026-06-28' -> '28 Jun 2026'."""
 
     if not iso_date:
-        return "Not set"
+        return t("Not set")
     from datetime import date
 
     try:
         d = date.fromisoformat(str(iso_date)[:10])
     except ValueError:
         return str(iso_date)
-    return f"{d.day:02d} {d:%b %Y}"
+    return t("{v0} {v1} {v2}", v0=f"{d.day:02d}", v1=t(d.strftime("%b")), v2=d.year)
 
 
 def to_amount(raw) -> str | None:
@@ -178,11 +185,14 @@ def to_amount(raw) -> str | None:
     if not cleaned:
         return None
     if cleaned.count(".") > 1:
-        raise ValueError(f"“{raw}” is not a valid amount.")
+        raise ValueError(t('“{v0}” is not a valid amount.', v0=raw))
     try:
-        return f"{Decimal(cleaned):.2f}"
+        amount = Decimal(cleaned)
+        if not amount.is_finite():
+            raise ValueError(t('Enter a finite amount.'))
+        return f"{amount:.2f}"
     except InvalidOperation:
-        raise ValueError(f"“{raw}” is not a valid amount.") from None
+        raise ValueError(t('“{v0}” is not a valid amount.', v0=raw)) from None
 
 
 def balance_series(events) -> list[tuple[str, float]]:
@@ -244,11 +254,16 @@ def note(text: str, bg: str = NOTE_BG) -> ft.Container:
 def primary_button(label: str, on_click, expand: bool = False, disabled=False):
     return ft.FilledButton(
         content=label,
-        bgcolor=INK,
+        bgcolor=PRIMARY,
         color=BG,
         height=BUTTON_H,
         expand=expand,
         disabled=disabled,
+        style=ft.ButtonStyle(
+            animation_duration=duration(),
+            text_style=ft.TextStyle(size=BODY, weight=ft.FontWeight.W_600),
+            shape=ft.RoundedRectangleBorder(radius=RADIUS),
+        ),
         on_click=on_click,
     )
 
@@ -260,6 +275,8 @@ def secondary_button(label: str, on_click, expand: bool = False):
         height=BUTTON_H,
         expand=expand,
         style=ft.ButtonStyle(
+            animation_duration=duration(),
+            text_style=ft.TextStyle(size=BODY, weight=ft.FontWeight.W_600),
             bgcolor=SURFACE,
             side=ft.BorderSide(1, BORDER),
             shape=ft.RoundedRectangleBorder(radius=RADIUS),
@@ -272,7 +289,8 @@ def text_button(label: str, on_click):
     return ft.TextButton(
         content=ft.Text(label, size=BODY_SM, color=INK),
         style=ft.ButtonStyle(
-            overlay_color=ft.Colors.TRANSPARENT,
+            overlay_color={ft.ControlState.FOCUSED: BORDER,
+                               ft.ControlState.PRESSED: NOTE_BG},
             padding=ft.Padding.symmetric(horizontal=0, vertical=SPACE_S),
         ),
         on_click=on_click,
@@ -284,7 +302,7 @@ def logo() -> ft.Row:
         spacing=SPACE_S - 2,
         controls=[
             ft.Container(
-                content=ft.Text("FS", size=10, weight=ft.FontWeight.BOLD, color=BG),
+                content=ft.Text(t('FS'), size=10, weight=ft.FontWeight.BOLD, color=BG),
                 bgcolor=INK,
                 border_radius=3,
                 width=18,
@@ -292,7 +310,7 @@ def logo() -> ft.Row:
                 alignment=ft.Alignment.CENTER,
             ),
             ft.Text(
-                "FlowShelter", size=BODY, weight=ft.FontWeight.W_600, color=INK
+                t('FlowShelter'), size=BODY, weight=ft.FontWeight.W_600, color=INK
             ),
         ],
     )

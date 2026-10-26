@@ -9,8 +9,10 @@ pure pieces the screens delegate to. Run with `uv run pytest` from `mobile/`.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import app as app_module
+import flet as ft
 import theme
 from app import FlowShelterApp
 
@@ -19,9 +21,9 @@ from app import FlowShelterApp
 # Milestones
 # ---------------------------------------------------------------------------
 def test_crossed_reports_only_newly_crossed_bands():
-    """A jump from 20% to 55% crosses 25 and 50; the first is reported."""
+    """A jump across multiple bands reports the highest newly reached one."""
 
-    assert FlowShelterApp._crossed(20, 55) == 25
+    assert FlowShelterApp._crossed(20, 55) == 50
     assert FlowShelterApp._crossed(26, 55) == 50
     assert FlowShelterApp._crossed(60, 80) == 75
     assert FlowShelterApp._crossed(80, 100) == 100
@@ -39,9 +41,11 @@ class _FakeApp:
 
     MILESTONES = FlowShelterApp.MILESTONES
     _crossed = FlowShelterApp._crossed
+    note_goal_progress = FlowShelterApp.note_goal_progress
 
     def __init__(self):
         self.goal_progress = {}
+        self.page = object()
 
 
 def _run_note_progress(progress_values):
@@ -82,13 +86,23 @@ def test_crossing_one_band_at_a_time_speaks_once_each():
 # Reduced motion
 # ---------------------------------------------------------------------------
 def test_reduced_motion_zeroes_every_animation():
+    from widgets import chrome_theme
+
     theme.set_reduce_motion(False)
     assert theme.duration() == theme.ANIMATION_MS
+    assert (
+        chrome_theme().page_transitions.windows
+        == ft.PageTransitionTheme.ZOOM
+    )
 
     theme.set_reduce_motion(True)
     assert theme.duration() == 0
     assert theme.duration(400) == 0
     assert theme.reduce_motion() is True
+    assert (
+        chrome_theme().page_transitions.windows
+        == ft.PageTransitionTheme.NONE
+    )
 
     # Always restore: this is module state shared by every test.
     theme.set_reduce_motion(False)
@@ -106,6 +120,7 @@ class _FakePage:
     def __init__(self):
         self.tasks = []
         self.updated = []
+        self.views = []
 
     def run_task(self, handler, *args):
         self.tasks.append((handler, args))
@@ -158,3 +173,121 @@ def test_loading_state_finish_cancels_a_pending_reveal():
         return skeleton.visible
 
     assert asyncio.run(scenario()) is False
+
+
+# ---------------------------------------------------------------------------
+# Navigation and interaction feedback
+# ---------------------------------------------------------------------------
+class _FakeScreen:
+    def __init__(self, route):
+        self.route = route
+
+    def view(self):
+        return SimpleNamespace(route=self.route)
+
+
+def test_tab_switch_replaces_the_top_view_without_growing_the_stack():
+    app = FlowShelterApp.__new__(FlowShelterApp)
+    app.page = _FakePage()
+    app.page.views = [SimpleNamespace(route="/overview")]
+
+    FlowShelterApp._show_tab_screen(app, _FakeScreen("/cashflow"), "cashflow")
+    FlowShelterApp._show_tab_screen(app, _FakeScreen("/goals"), "goals")
+
+    assert [view.route for view in app.page.views] == ["/goals"]
+
+
+def test_returning_to_tab_under_a_form_preserves_the_tab_view():
+    app = FlowShelterApp.__new__(FlowShelterApp)
+    app.page = _FakePage()
+    tab = SimpleNamespace(route="/goals")
+    form = SimpleNamespace(route="/goals/form", is_form=True)
+    app.page.views = [tab, form]
+
+    FlowShelterApp._show_tab_screen(app, _FakeScreen("/goals"), "goals")
+
+    assert app.page.views == [tab]
+
+
+def test_submit_button_shows_and_restores_busy_feedback():
+    from widgets import set_busy, submit_button
+
+    button = submit_button("Save", on_click=lambda e: None)
+    set_busy(button, True, "Signing in")
+
+    assert button.disabled is True
+    assert isinstance(button.content, ft.Semantics)
+    assert button.content.label == "Signing in"
+    assert isinstance(button.content.content.controls[0], ft.ProgressRing)
+
+    set_busy(button, False)
+
+    assert button.disabled is False
+    assert isinstance(button.content, ft.Text)
+    assert button.content.value == "Save"
+
+
+def test_segmented_filters_use_a_native_single_choice_control():
+    from types import SimpleNamespace
+
+    from theme import BUTTON_H
+    from widgets import segmented
+
+    selected = []
+    control = segmented(
+        [("all", "All"), ("income", "Income")],
+        "all",
+        on_select=selected.append,
+    )
+
+    assert isinstance(control, ft.Container)
+    assert control.width == float("inf")
+    assert control.height == BUTTON_H
+
+    segments = control.content.controls
+    first, divider, second = segments
+    assert isinstance(first, ft.Semantics)
+    assert isinstance(second, ft.Semantics)
+    assert isinstance(divider, ft.Container)
+    assert first.content.height == control.height
+    assert second.content.height == control.height
+    assert first.content.expand is True
+    assert second.content.expand is True
+    assert first.selected is True
+    assert second.selected is False
+
+    first.content.on_click(SimpleNamespace(control=SimpleNamespace(page=None)))
+
+    assert selected == ["all"]
+    assert first.selected is True
+    assert second.selected is False
+
+
+def test_tappable_cards_expose_an_accessible_button_name():
+    from widgets import tappable
+
+    control = tappable(
+        ft.Container(content=ft.Text("Tax")),
+        on_click=lambda e: None,
+        label="Open savings goal Tax",
+    )
+
+    assert isinstance(control, ft.Semantics)
+    assert control.label == "Open savings goal Tax"
+    assert control.button is True
+    assert control.focusable is True
+
+
+def test_error_card_retry_action_calls_its_handler():
+    from widgets import error_card
+
+    retries = []
+    control = error_card(
+        "Could not load goals.",
+        on_retry=lambda e: retries.append(True),
+    )
+    retry_button = control.content.controls[1]
+
+    assert retry_button.content.value == "Try again"
+    retry_button.on_click(None)
+    assert retries == [True]

@@ -6,6 +6,9 @@ Flow
                               (otherwise) → onboarding at the saved step
 """
 
+from i18n import t
+from i18n import LANGUAGES, LANGUAGE_PREF_KEY, install_localization, localize_tree
+
 import asyncio
 import inspect
 
@@ -15,6 +18,7 @@ from api.client import Api, Unauthenticated, error_message
 from screens.cashflow import CashFlowScreen
 from screens.dashboard import DashboardScreen
 from screens.goals import GoalsScreen
+from screens.profile import ProfileScreen
 from screens.onboarding import (
     BalanceStep,
     CommitmentsStep,
@@ -58,12 +62,17 @@ MAX_STEP = 5
 class FlowShelterApp:
     def __init__(self, page: ft.Page):
         self.page = page
+        self.language = "en"
+        self._language_lock = asyncio.Lock()
+        self.page.language_code = "en"
+        install_localization(page)
         self.api = Api()
 
         # Server state, refreshed rather than mutated from the UI.
         self.draft: dict = {}
         self.commitments: list[dict] = []
         self.overview: dict = {}
+        self.profile_user: dict = {}
 
         # True while re-entering a saved draft: the goal form then opens the
         # review instead of creating a goal.
@@ -89,6 +98,8 @@ class FlowShelterApp:
         # Last seen progress per goal, used to spot a goal crossing 25/50/75%
         # and show one milestone message — never a celebration on every open.
         self.goal_progress: dict = {}
+        self.session_revision = 0
+        self._onboarding_screens = {}
 
         self.welcome = WelcomeScreen(page, self)
         self.dashboard = DashboardScreen(page, self)
@@ -140,15 +151,50 @@ class FlowShelterApp:
         """Restore display settings before the first screen paints."""
 
         try:
+            language = await self.prefs.get(LANGUAGE_PREF_KEY)
+        except Exception:
+            language = "en"
+        self.set_language(language if language in LANGUAGES else "en")
+        try:
             saved = await self.prefs.get(REDUCE_MOTION_KEY)
         except Exception:  # noqa: BLE001 - a fresh store has nothing saved
             saved = None
         theme_set_reduce_motion(saved == "1")
+        self.page.theme = chrome_theme()
+
+    def set_language(self, language):
+        if language not in LANGUAGES:
+            language = "en"
+        self.language = language
+        self.page.language_code = language
+        # Flutter's native pickers fall back to English for locales not bundled
+        # with Material; app-owned copy still uses the selected language.
+        native = language if language in ("en", "af", "zu") else "en"
+        self.page.locale_configuration = ft.LocaleConfiguration(
+            supported_locales=[ft.Locale(language_code=code) for code in ("en", "af", "zu")],
+            current_locale=ft.Locale(language_code=native),
+        )
+        if hasattr(self, "welcome"):
+            self.welcome.language.value = language
+            localize_tree(self.welcome.body, language)
+        self.page.update()
+
+    async def save_language(self, language):
+        # Selection updates immediately in the UI. Serialize persistence so a
+        # slower earlier selection cannot overwrite a more recent preference.
+        async with self._language_lock:
+            if language != self.language or self.prefs is None:
+                return
+            try:
+                await self.prefs.set(LANGUAGE_PREF_KEY, language)
+            except Exception:
+                snack(self.page, t("Could not save your language preference. Try again."), kind="error")
 
     async def save_reduce_motion(self, value: bool):
         """Apply and persist the reduced-motion preference."""
 
         theme_set_reduce_motion(value)
+        self.page.theme = chrome_theme()
         if self.prefs is not None:
             await self.prefs.set(REDUCE_MOTION_KEY, "1" if value else "0")
 
@@ -168,7 +214,10 @@ class FlowShelterApp:
         if step == 5:
             self.page.run_task(self.show_goal_form)
             return
-        screen = STEPS[step](self.page, self)
+        screen = self._onboarding_screens.get(step)
+        if screen is None:
+            screen = STEPS[step](self.page, self)
+            self._onboarding_screens[step] = screen
         self._replace_view(screen.view())
 
     async def show_goal_form(self):
@@ -189,18 +238,13 @@ class FlowShelterApp:
         self._replace_view(starting_picture_view(self.page, self, self.overview))
 
     async def open_dashboard(self):
+        self._show_tab_screen(self.dashboard, "overview")
+        self.busy = False
         try:
             await self.dashboard.load()
         except Unauthenticated:
             await self.logout()
             return
-        top = self._current_view()
-        if top is not None and getattr(top, "is_form", False):
-            # "Save & exit" from a form: land on the dashboard the same way a
-            # tab does, so the stack keeps a view to go back to.
-            self._show_tab_screen(self.dashboard, "overview")
-            return
-        self._replace_view(self.dashboard.view())
 
     async def open_tab(self, tab: str):
         """Switch bottom-bar tabs. Each screen re-fetches when opened.
@@ -225,20 +269,13 @@ class FlowShelterApp:
             await self.open_dashboard()
             return
         screen = self.tab_screen(tab)
-        if self._has_content(screen):
-            # Revisiting a tab: it already has content, so show it at once and
-            # let the refresh run behind it — the tap gets immediate feedback.
-            self._show_tab_screen(screen, tab)
-            await screen.load()
-            return
-        # First visit: nothing to show yet, so load before swapping in the
-        # screen to avoid a flash of empty body.
+        self._show_tab_screen(screen, tab)
+        self.busy = False
         try:
             await screen.load()
         except Unauthenticated:
             await self.logout()
             return
-        self._show_tab_screen(screen, tab)
 
     @staticmethod
     def _has_content(screen) -> bool:
@@ -281,10 +318,30 @@ class FlowShelterApp:
 
     async def open_transaction_form(self, transaction: dict | None = None):
         """Add (transaction=None) or edit an existing transaction."""
+        top = self._current_view()
+        if top is not None and getattr(top, "is_form", False):
+            return
         form = self.tab_screen("transactions").form(transaction)
         self._push_form(form.view())
 
+    async def open_profile(self):
+        top = self._current_view()
+        if top is not None and top.route == "/profile":
+            return
+        screen = ProfileScreen(self.page, self)
+        self._push(screen.view())
+        await screen.load()
+
+    def close_profile(self, e=None):
+        top = self._current_view()
+        if top is not None and top.route == "/profile" and len(self.page.views) > 1:
+            self.page.views.pop()
+            self.page.update()
+
     async def open_goal_form(self, goal: dict | None = None):
+        top = self._current_view()
+        if top is not None and getattr(top, "is_form", False):
+            return
         form = self.tab_screen("goals").form(goal)
         self._push_form(form.view())
 
@@ -309,6 +366,10 @@ class FlowShelterApp:
         top = self._current_view()
         if top is None:
             return
+        leave = getattr(top, "request_leave", None)
+        if leave is not None:
+            leave()
+            return
         if len(views) == 1:
             # Nothing to return to (the welcome or offline screen): keep it.
             return
@@ -323,11 +384,28 @@ class FlowShelterApp:
         await self.start()
 
     async def logout(self):
+        self.session_revision += 1
         await self.api.clear_token()
         self.draft = {}
         self.commitments = []
         self.overview = {}
+        self.profile_user = {}
         self.goal_progress = {}
+        self._onboarding_screens = {}
+        self.dashboard.series = []
+        self.dashboard.error = None
+        self.dashboard.chart_error = False
+        self.cashflow.data = {}
+        self.transactions.data = {}
+        self.goals.goals = []
+        for screen in (self.dashboard, self.cashflow, self.transactions, self.goals):
+            screen.content.controls = []
+            screen.loading = False
+            screen.view_control.loading_state.finish()
+            screen.refresh_bar.visible = False
+            if hasattr(screen, "requests"):
+                screen.requests.revision += 1
+                screen.requests.pending.clear()
         self.tab_view = {"cashflow": "until_next_payment", "cashflow_month": None}
         self.tx_filters = {"kind": "all", "from_date": None, "month": None}
         self.show_welcome()
@@ -360,11 +438,11 @@ class FlowShelterApp:
             crossed = self._crossed(previous, progress)
             if crossed is None:
                 continue
-            name = goal.get("name") or "your goal"
+            name = goal.get("name") or t("your goal")
             message = (
-                f"You reached {name}!"
+                t('You reached {v0}!', v0=name)
                 if crossed == 100
-                else f"{name} is {crossed}% funded. Keep going."
+                else t('{v0} is {v1}% funded. Keep going.', v0=name, v1=crossed)
             )
         if message:
             snack(self.page, message, kind="success")
@@ -392,6 +470,7 @@ class FlowShelterApp:
         except Exception as exc:  # noqa: BLE001
             self.show_offline(error_message(exc))
             return
+        self._onboarding_screens = {}
         self.show_step(1)
 
     # ---- view helpers ----------------------------------------------------
@@ -453,7 +532,7 @@ class FlowShelterApp:
                 controls=[
                     ft.Container(expand=True),
                     ft.Text(
-                        "Can't load your plan",
+                        t("Can't load your plan"),
                         size=TITLE,
                         weight=ft.FontWeight.W_700,
                         color=INK,
@@ -461,7 +540,7 @@ class FlowShelterApp:
                     ft.Text(message, size=BODY, color=MUTED),
                     ft.Container(height=SPACE_L),
                     ft.FilledButton(
-                        content="Try again",
+                        content=t("Try again"),
                         bgcolor=INK,
                         color=SURFACE,
                         height=BUTTON_H,
