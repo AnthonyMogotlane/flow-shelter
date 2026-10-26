@@ -10,13 +10,13 @@ Existing values are kept if the user leaves a field alone.
 """
 
 from datetime import date
-from decimal import Decimal, InvalidOperation
 
 import flet as ft
 
 from api.client import error_message
 from theme import (
     BG,
+    BODY_SM,
     BORDER,
     INK,
     MUTED,
@@ -27,8 +27,10 @@ from theme import (
     note,
     primary_button,
     secondary_button,
+    shown_amount,
     style_input,
     text_button,
+    to_amount,
 )
 from widgets import (
     DateField,
@@ -38,8 +40,10 @@ from widgets import (
     nav_footer,
     onboarding_view,
     progress_header,
+    set_busy,
     set_error,
     step_title,
+    submit_button,
     top_bar,
 )
 
@@ -63,39 +67,10 @@ PRIORITIES = [
 ]
 
 
-def _to_amount(raw) -> str | None:
-    """'R 18 450' / '18 450,50' / '18450' -> '18450.00' (None when blank).
-
-    Raises ValueError for anything that is not a number, so a typo shows up
-    next to the field instead of coming back as a 422.
-    """
-
-    if raw is None:
-        return None
-    cleaned = (
-        str(raw)
-        .replace("R", "")
-        .replace(" ", "")
-        .replace(" ", "")
-        .replace(",", ".")
-        .strip()
-    )
-    if not cleaned:
-        return None
-    if cleaned.count(".") > 1:
-        raise ValueError(f"“{raw}” is not a valid amount.")
-    try:
-        return f"{Decimal(cleaned):.2f}"
-    except InvalidOperation:
-        raise ValueError(f"“{raw}” is not a valid amount.") from None
-
-
-def _shown_amount(value) -> str:
-    """Render an API money string in a text field without '.0' noise."""
-
-    if value in (None, ""):
-        return ""
-    return _to_amount(value) or ""
+# Amount parsing lives in theme so the cash-flow forms share it; these short
+# names keep the call sites in this module readable.
+_to_amount = to_amount
+_shown_amount = shown_amount
 
 
 class OnboardingScreen:
@@ -105,11 +80,20 @@ class OnboardingScreen:
     title = ""
     subtitle = None
 
+    continue_label = "Continue"
+
     def __init__(self, page: ft.Page, app):
         self.page = page
         self.app = app
         self.draft = app.draft or {}
         self.error = error_text()
+        # One button per screen, reused across renders so the spinner sits
+        # exactly where the user tapped.
+        self.submit = submit_button(
+            self.continue_label,
+            lambda e: self.save_and(next_step=self.step + 1),
+        )
+        self.skip_button: ft.Control | None = None
 
     # ---- to be implemented by each step ---------------------------------
     def body(self) -> list[ft.Control]:
@@ -119,10 +103,7 @@ class OnboardingScreen:
         return {}
 
     def footer(self) -> ft.Control:
-        return nav_footer(
-            on_back=lambda e: self.back(),
-            on_continue=lambda e: self.save_and(next_step=self.step + 1),
-        )
+        return nav_footer(on_back=lambda e: self.back(), submit=self.submit)
 
     # ---- helpers ---------------------------------------------------------
     def back(self):
@@ -143,10 +124,25 @@ class OnboardingScreen:
         )
 
     def save_and(self, next_step: int | None = None, exit_on_success=False):
-        set_error(self.error, None, self.page)
+        if self.submit.disabled:
+            return  # a save is already in flight
         self.page.run_task(self._save, next_step, exit_on_success)
 
+    def _set_busy(self, busy: bool):
+        set_busy(self.submit, busy)
+        if self.skip_button is not None:
+            self.skip_button.disabled = busy
+        self.page.update()
+
+    def _clear_error(self):
+        self.error.value = ""
+        self.error.visible = False
+
     async def _save(self, next_step, exit_on_success):
+        # Clear last error and show the spinner in one paint, so the old
+        # message never sits next to a button that looks ready to press again.
+        self._clear_error()
+        self._set_busy(True)
         try:
             data = self.payload()
             if data is not None:
@@ -155,11 +151,14 @@ class OnboardingScreen:
             # resumes here rather than skipping ahead to a screen never shown.
             await self.app.api.set_step(self.step)
         except ValueError as exc:
+            self._set_busy(False)
             set_error(self.error, str(exc), self.page)
             return
         except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            self._set_busy(False)
             set_error(self.error, error_message(exc), self.page)
             return
+        self._set_busy(False)
         if exit_on_success:
             await self.app.open_dashboard()
             return
@@ -251,12 +250,18 @@ class WorkStep(OnboardingScreen):
 
     def footer(self):
         # Nothing on step 1 is required to leave, so both buttons just move on.
-        return nav_footer(
-            on_back=lambda e: self.save_and(exit_on_success=True),
-            skip_label="Skip optional details",
-            on_continue=lambda e: self.save_and(next_step=2),
-            continue_label="Continue",
-            back_label="Back",
+        skip = ft.TextButton(
+            content=ft.Text("Skip optional details", size=BODY_SM, color=INK),
+            style=ft.ButtonStyle(
+                overlay_color=ft.Colors.TRANSPARENT,
+                padding=ft.Padding.symmetric(horizontal=0),
+            ),
+            on_click=lambda e: self.save_and(exit_on_success=True),
+        )
+        self.skip_button = skip
+        return ft.Row(
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[skip, self.submit],
         )
 
 
@@ -526,9 +531,17 @@ class CommitmentsStep(OnboardingScreen):
     def footer(self):
         return nav_footer(
             on_back=lambda e: self.save_and(exit_on_success=True),
-            on_continue=lambda e: self.save_and(next_step=5),
-            continue_label="Review & continue",
+            submit=self._submit_for("Review & continue", next_step=5),
         )
+
+    def _submit_for(self, label: str, next_step: int) -> ft.Control:
+        """A footer primary with this step's own label, sharing the busy
+        treatment used by every other form."""
+
+        self.submit = submit_button(
+            label, lambda e: self.save_and(next_step=next_step)
+        )
+        return self.submit
 
     async def _save(self, next_step, exit_on_success):
         set_error(self.error, None, self.page)
@@ -585,25 +598,35 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
         ft.Dropdown(value=goal.get("priority") or "medium", options=PRIORITIES)
     )
 
-    saving = ft.Text(size=13, color=MUTED, visible=False)
+    submit = submit_button(
+        "Create goal", lambda e: page.run_task(run_goal, save_goal)
+    )
+    skip_button = secondary_button(
+        "Skip for now", lambda e: page.run_task(run_goal, skip), expand=True
+    )
 
     async def run_goal(action):
-        """Run a button action; ignore taps while one is in flight."""
+        """Run a button action, with both buttons busy while it is in flight.
 
-        if saving.visible:
+        The spinner sits on the action's own button (the same treatment as
+        the other forms), and a second tap cannot start a second request.
+        """
+
+        if submit.disabled:
             return
         if app.resuming:
             # Reopened at the goal step, so onboarding is effectively over:
             # go to the review rather than silently creating an empty goal.
             await app.show_starting_picture()
             return
-        saving.value = "Saving…"
-        saving.visible = True
+        set_busy(submit, True)
+        skip_button.disabled = True
         page.update()
         try:
             await action()
         finally:
-            saving.visible = False
+            set_busy(submit, False)
+            skip_button.disabled = False
             page.update()
 
     async def save_goal(e=None):
@@ -651,31 +674,12 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
         labeled("Target date (optional)", target_date.field),
         labeled("Priority (optional)", priority),
         error,
-        saving,
         ft.Divider(color=BORDER),
         ft.Row(
             spacing=10,
             controls=[
-                ft.Column(
-                    expand=True,
-                    controls=[
-                        secondary_button(
-                            "Skip for now",
-                            lambda e: page.run_task(run_goal, skip),
-                            expand=True,
-                        )
-                    ],
-                ),
-                ft.Column(
-                    expand=True,
-                    controls=[
-                        primary_button(
-                            "Create goal",
-                            lambda e: page.run_task(run_goal, save_goal),
-                            expand=True,
-                        )
-                    ],
-                ),
+                ft.Column(expand=True, controls=[skip_button]),
+                ft.Column(expand=True, controls=[submit]),
             ],
         ),
     ]
