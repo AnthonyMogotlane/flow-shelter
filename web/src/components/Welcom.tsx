@@ -1,29 +1,30 @@
+﻿import { useState } from 'react'
+import logo from '../assets/flowshelter-logo.png'
 import './Welcom.css'
 
-interface WelcomeProps {
-  teamName: string;
-  appName: string;
-  slogan: string;
+interface WelcomeProps { teamName: string; appName: string; slogan: string }
+function Icon({ name }: { name: 'download' | 'arrow' | 'home' | 'chart' | 'wallet' | 'goal' | 'check' }) {
+  const paths = { download: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5', arrow: 'M5 12h14m-6-6 6 6-6 6', home: 'm3 10 9-7 9 7v11h-6v-7H9v7H3Z', chart: 'M4 20V10m8 10V4m8 16v-7', wallet: 'M20 8V5H4v15h16V8H4m12 5h4', goal: 'M12 3v18m-5-5 5 5 5-5M5 3h14', check: 'm5 12 4 4L19 6' }
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>
 }
-
 export default function Welcome({ teamName, appName, slogan }: WelcomeProps) {
-  return (
-    <div className="welcome">
-      <svg
-        className="welcome-mark"
-        viewBox="0 0 137 117"
-        role="img"
-        aria-label={`${appName} logo`}
-      >
-        <path d="M15 7h107v107H57c4-7 4-15 0-22h46V27H35v45H15z" />
-        <circle cx="25.5" cy="102.5" r="15.5" />
-      </svg>
-      <div></div>
-      <div></div>
-      <h1>Welcome, <span>{teamName}</span>!</h1>
-      <div></div>
-      <div></div>
-      <p>This is <strong>{appName}</strong>, we say "{slogan}"</p>
-    </div>
-  );
+  const [notice, setNotice] = useState(false)
+  const url = (import.meta.env.VITE_ANDROID_DOWNLOAD_URL as string | undefined)?.trim()
+  const downloadUrl = url && /^(https?:\/\/|\/(?!\/))/.test(url) ? url : undefined
+  const downloadContent = <><Icon name="download" /><span><small>TAKE YOUR PLAN WITH YOU</small>Download for Android</span><Icon name="arrow" /></>
+  return <div className="fs-landing" id="top">
+    <header className="fs-header"><a className="fs-brand" href="#top" aria-label={`${appName} home`}><img src={logo} alt="" /><span>{appName}</span></a><nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#features">Why FlowShelter</a></nav><a className="fs-nav-download" href="#download">Get the app <Icon name="arrow" /></a></header>
+    <main>
+      <section className="fs-hero" aria-labelledby="fs-title">
+        <div className="fs-hero-copy"><p className="fs-eyebrow"><span /> A LITTLE CLARITY. A LOT MORE CALM.</p><h1 id="fs-title">Plan for the days <em>between paydays.</em></h1><p className="fs-description">Your income may change. Your peace of mind shouldn’t. Manage irregular income, cover the essentials, and make room for your goals.</p><div className="fs-actions" id="download">{downloadUrl ? <a className="fs-download" href={downloadUrl}>{downloadContent}</a> : <button className="fs-download" type="button" onClick={() => setNotice(true)} aria-describedby="fs-download-status">{downloadContent}</button>}<p className="fs-download-note" id="fs-download-status" role="status">{notice ? 'The Android download isn’t available yet. Please check back soon.' : downloadUrl ? 'Made for Android. Built around your life.' : 'Android release coming soon.'}</p></div><div className="fs-hero-benefits"><span><Icon name="check" /> Irregular income, understood</span><span><Icon name="check" /> Your goals, in sight</span></div></div>
+        <div className="fs-preview" aria-label="Illustrative FlowShelter dashboard preview"><div className="fs-orbit" /><div className="fs-orbit fs-orbit-two" /><div className="fs-floating fs-income"><span className="fs-float-icon">↙</span><div><small>A little more breathing room</small><strong>Income received</strong></div><span className="fs-float-check">✓</span></div>
+          <div className="fs-phone"><div className="fs-phone-camera" /><div className="fs-phone-status"><span>9:41</span><span>▮▮▮ &nbsp; ▰</span></div><div className="fs-phone-content"><div className="fs-phone-brand"><img src={logo} alt="" /><strong>{appName}</strong><span className="fs-avatar">T</span></div><p className="fs-phone-greeting">A clearer picture of your money</p><h2>Hello, Thandi <span>☀</span></h2><div className="fs-balance"><div><span>Available balance</span><Icon name="wallet" /></div><strong>R 4,850<span>.00</span></strong><p>Making today work. Planning for tomorrow.</p><svg viewBox="0 0 260 55" fill="none" aria-hidden="true"><path d="M0 45C20 45 20 25 40 30S65 50 85 30s30 5 50-8 30 5 50-8 30 0 45-8 20-4 30-5" stroke="#d5e7b2" strokeWidth="3" /></svg></div><div className="fs-phone-section"><h3>Coming up</h3><span>Your next 7 days</span></div><div className="fs-transaction"><span className="fs-transaction-icon"><Icon name="home" /></span><div><strong>Rent & essentials</strong><small>Keeping the important things covered</small></div><b>R 2,400</b></div><div className="fs-transaction"><span className="fs-transaction-icon fs-light"><Icon name="wallet" /></span><div><strong>Freelance project</strong><small>Expected income · Friday</small></div><b className="fs-positive">+ R 3,000</b></div><div className="fs-phone-section"><h3>A little closer to your goal</h3><span>↗</span></div><div className="fs-goal"><div><span>✧ &nbsp; Emergency fund</span><strong>65%</strong></div><div className="fs-progress"><span /></div><p>R 3,250 <span>of R 5,000</span></p></div></div><div className="fs-phone-nav">{(['home', 'chart', 'wallet', 'goal'] as const).map((name, index) => <div key={name} className={index === 0 ? 'fs-selected' : ''}><Icon name={name} /><span>{['Overview', 'Cash flow', 'Transactions', 'Goals'][index]}</span></div>)}</div><div className="fs-phone-bar" /></div>
+          <div className="fs-floating fs-savings"><span className="fs-savings-spark">✧</span><div><strong>Small steps. Real progress.</strong><small>Your next goal is getting closer.</small></div></div><span className="fs-preview-caption">A glimpse of your next chapter · Illustrative preview</span>
+        </div>
+      </section>
+      <section className="fs-language-strip" aria-label="Supported languages"><span>A plan that speaks your language.</span><p>English <i /> isiZulu <i /> Afrikaans <i /> isiXhosa <i /> Sesotho</p></section>
+      <section className="fs-features" id="features" aria-labelledby="fs-features-title"><div className="fs-section-heading"><p className="fs-eyebrow">LESS GUESSWORK. MORE LIVING.</p><h2 id="fs-features-title">Life doesn’t run on a fixed salary.<br />Your money plan shouldn’t have to.</h2></div><div className="fs-feature-grid"><article><span className="fs-feature-icon"><Icon name="chart" /></span><h3>See what’s ahead</h3><p>Bring expected income and upcoming bills into one cash-flow view. Know where you stand before the next payday.</p></article><article><span className="fs-feature-icon"><Icon name="wallet" /></span><h3>Cover what matters</h3><p>Keep track of everyday spending and essential commitments, so the important things stay part of the plan.</p></article><article><span className="fs-feature-icon"><Icon name="goal" /></span><h3>Make room for your goals</h3><p>An emergency fund or something to look forward to. Set a savings goal and watch every contribution add up.</p></article></div></section>
+      <section className="fs-how" id="how-it-works" aria-labelledby="fs-how-title"><div><p className="fs-eyebrow">YOUR NEXT CHAPTER STARTS HERE</p><h2 id="fs-how-title">A clearer plan.<br />One step at a time.</h2><a href="#download">Get FlowShelter for Android <Icon name="arrow" /></a></div><ol><li><span>01</span><div><h3>Start with your picture</h3><p>Add your balance, expected income, and essential bills.</p></div></li><li><span>02</span><div><h3>Find your flow</h3><p>See your cash flow and plan for the days between payments.</p></div></li><li><span>03</span><div><h3>Keep moving forward</h3><p>Track transactions and put a little aside towards your goals.</p></div></li></ol></section>
+    </main><footer className="fs-footer"><a className="fs-brand" href="#top"><img src={logo} alt="" /><span>{appName}</span></a><p>{slogan}.</p><span>Made with care by {teamName} · {new Date().getFullYear()}</span></footer>
+  </div>
 }
