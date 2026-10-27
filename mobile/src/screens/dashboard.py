@@ -4,10 +4,15 @@ Built from GET /api/dashboard/overview, which already includes the alerts,
 so the alert banner, the money cards and the greeting all come from one
 response, re-fetched every time the screen opens.
 
-The bottom bar mirrors the wireframe. Only Overview has a screen behind it;
-the other tabs point back here rather than faking a destination that does
-not exist in the API yet.
+The balance card also plots the real running balances from
+GET /api/cashflow/timeline. If that call fails the chart is simply left out
+— the money figures above it never change.
+
+The bottom bar is shared with the Cash flow, Transactions and Goals screens.
+Every figure here comes from the API; nothing is estimated in the UI.
 """
+
+from i18n import t
 
 from datetime import datetime
 
@@ -15,68 +20,116 @@ import flet as ft
 
 from api.client import Unauthenticated, error_message
 from theme import (
-    BG,
     BORDER,
+    BODY,
+    BODY_SM,
+    CAPTION_SIZE,
+    CARD_VALUE,
+    HEADING,
     INK,
     MUTED,
+    ON_INK,
+    ON_INK_MUTED,
+    RADIUS,
+    SPACE_L,
+    SPACE_M,
+    SPACE_S,
     SURFACE,
-    WARN_BG,
+    SPACE_XS,
+    balance_series,
     caption,
     format_date,
     money,
     primary_button,
+    secondary_button,
+    short_date,
     text_button,
 )
-from widgets import card
-
-TABS = [
-    ("overview", "Overview", ft.Icons.HOME_OUTLINED),
-    ("cashflow", "Cash flow", ft.Icons.INSIGHTS_OUTLINED),
-    ("transactions", "Transactions", ft.Icons.SWAP_VERT_OUTLINED),
-    ("goals", "Goals", ft.Icons.FLAG_OUTLINED),
-]
+from widgets import (
+    action_row,
+    alert_banner,
+    card,
+    detail_text,
+    empty_state,
+    error_card,
+    heading,
+    page_title,
+    refresh_indicator,
+    savings_progress,
+    stat_card,
+    tab_view,
+)
 
 
 def greeting() -> str:
     hour = datetime.now().hour
     if hour < 12:
-        return "Good morning"
+        return t('Good morning')
     if hour < 18:
-        return "Good afternoon"
-    return "Good evening"
+        return t('Good afternoon')
+    return t('Good evening')
 
 
-def money_card(label: str, amount: str, detail: str) -> ft.Container:
-    return card(
-        ft.Column(
-            spacing=6,
-            controls=[
-                caption(label.upper()),
-                ft.Text(amount, size=30, weight=ft.FontWeight.W_700, color=INK),
-                ft.Text(detail, size=13, color=MUTED),
-            ],
-        )
-    )
+def balance_bars(series: list[tuple[str, float]], currency: str) -> ft.Control:
+    """A small bar sketch of the running balance from the cash-flow plan.
 
+    Flet 1.0.5 ships no chart control, so this draws the timeline's own
+    balances as thin bars with the end value labelled. It reads recorded
+    events; it is not a forecast, and it draws nothing when there is
+    nothing to draw.
+    """
 
-def alert_banner(alert: dict, on_review) -> ft.Container:
-    severity_colour = "#C9A227" if alert.get("severity") == "warning" else BORDER
-    return ft.Container(
-        bgcolor=WARN_BG,
-        padding=ft.Padding.symmetric(horizontal=14, vertical=12),
-        border=ft.Border(left=ft.BorderSide(3, severity_colour)),
-        content=ft.Column(
-            spacing=6,
-            controls=[
-                ft.Text(
-                    alert.get("message") or "Something needs your attention.",
-                    size=14,
-                    weight=ft.FontWeight.W_600,
-                    color=INK,
+    if not series:
+        return detail_text(t('No planned events yet.'))
+
+    visible_series = series[-5:]
+    values = [value for _, value in visible_series]
+    low = min(values + [0.0])
+    high = max(values + [1.0])
+    span = high - low or 1.0
+    bars: list[ft.Control] = []
+    for date_text, value in visible_series:
+        height = 6 + 46 * (value - low) / span
+        bars.append(
+            ft.Semantics(
+                expand=True,
+                label=f"{short_date(date_text)}: {money(value, currency)}",
+                exclude_semantics=True,
+                content=ft.Column(
+                spacing=2,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Container(
+                        height=height,
+                        width=6,
+                        border_radius=3,
+                        bgcolor=INK if value >= 0 else MUTED,
+                        tooltip=f"{short_date(date_text)}: {money(value, currency)}",
+                    ),
+                    ft.Text(
+                        short_date(date_text),
+                        size=CAPTION_SIZE - 1,
+                        color=MUTED,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ],
                 ),
-                text_button("Review", on_review),
-            ],
-        ),
+            )
+        )
+    return ft.Column(
+        spacing=SPACE_S,
+        controls=[
+            ft.Container(
+                content=ft.Row(
+                    spacing=SPACE_XS,
+                    vertical_alignment=ft.CrossAxisAlignment.END,
+                    controls=bars,
+                ),
+            ),
+            detail_text(
+                t('Latest planned balances from {v0} to {v1}, ending at {v2}.', v0=short_date(visible_series[0][0]), v1=short_date(visible_series[-1][0]), v2=money(visible_series[-1][1], currency))
+            ),
+        ],
     )
 
 
@@ -86,115 +139,43 @@ class DashboardScreen:
         self.app = app
         self.default_currency = "ZAR"
 
-        self.content = ft.Column(spacing=12, controls=[])
-        self.body = ft.Column(
-            expand=True,
-            spacing=12,
-            controls=[self.content],
-            scroll=ft.ScrollMode.AUTO,
-        )
-        self.loading = ft.ProgressBar(
-            visible=True, color=INK, bgcolor=BORDER, bar_height=2
+        self.series: list[tuple[str, float]] = []
+        self.error: str | None = None
+        self.loading = False
+        self.refresh_bar = refresh_indicator()
+        self.content = ft.Column(
+            spacing=SPACE_M,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[],
         )
 
         # Flet 1.x has no pull-to-refresh control; the dashboard re-fetches
-        # every time it is opened through app.open_dashboard().
-        self.scrollable = ft.Column(
-            expand=True,
-            spacing=0,
-            controls=[self.loading, self.body],
+        # every time it is opened through app.open_dashboard(). One view
+        # object is reused, so switching tabs swaps the top view instead of
+        # stacking a second dashboard.
+
+        self.view_control = tab_view(
+            t('Overview'),
+            app,
+            self._padded(),
+            active="overview",
+            loading=True,
+            theme_icon=ft.IconButton(
+                icon=ft.Icons.REFRESH,
+                icon_size=18,
+                icon_color=INK,
+                tooltip=t('Refresh'),
+                on_click=lambda e: self.page.run_task(self.load),
+            ),
         )
 
-        self.view_control = ft.View(
-            route="/dashboard",
-            bgcolor=BG,
-            padding=0,
-            controls=[
-                ft.Container(
-                    padding=ft.Padding.symmetric(horizontal=16, vertical=10),
-                    content=self._top_bar(),
-                ),
-                self.scrollable,
-                self._bottom_nav(),
-            ],
-        )
-
-    # ---- layout ----------------------------------------------------------
-    def _top_bar(self) -> ft.Row:
-        return ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Column(
-                    spacing=0,
-                    controls=[
-                        ft.Text("FLOWSHELTER", size=9, color=MUTED),
-                        ft.Text(
-                            "Overview",
-                            size=18,
-                            weight=ft.FontWeight.W_600,
-                            color=INK,
-                        ),
-                    ],
-                ),
-                ft.Row(
-                    spacing=12,
-                    controls=[
-                        ft.Icon(ft.Icons.WB_SUNNY_OUTLINED, size=18, color=INK),
-                        ft.Container(
-                            width=30,
-                            height=30,
-                            bgcolor=BORDER,
-                            border_radius=15,
-                            alignment=ft.Alignment.CENTER,
-                            content=ft.Text(self._initials(), size=11, color=INK),
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    def _initials(self) -> str:
-        user = (self.app.overview or {}).get("user") or {}
-        name = (user.get("name") or "").strip()
-        parts = [p for p in name.split() if p]
-        if not parts:
-            return "?"
-        return "".join(p[0].upper() for p in parts[:2])
-
-    def _bottom_nav(self) -> ft.Container:
-        items = []
-        for key, label, icon in TABS:
-            active = key == "overview"
-            items.append(
-                ft.Container(
-                    expand=True,
-                    on_click=(None if active
-                              else (lambda e, l=label: self._not_available(l))),
-                    content=ft.Column(
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=2,
-                        controls=[
-                            ft.Icon(
-                                icon,
-                                size=18,
-                                color=INK if active else MUTED,
-                            ),
-                            ft.Text(
-                                label,
-                                size=10,
-                                weight=ft.FontWeight.W_600 if active else None,
-                                color=INK if active else MUTED,
-                            ),
-                        ],
-                    ),
-                )
-            )
+    def _padded(self) -> ft.Container:
         return ft.Container(
-            bgcolor=SURFACE,
-            border=ft.Border(top=ft.BorderSide(1, BORDER)),
-            padding=ft.Padding.symmetric(vertical=8),
-            content=ft.Row(spacing=0, controls=items),
+            width=float("inf"),
+            padding=ft.Padding.symmetric(
+                horizontal=SPACE_M + SPACE_XS, vertical=SPACE_M
+            ),
+            content=self.content,
         )
 
     # ---- data ------------------------------------------------------------
@@ -202,27 +183,85 @@ class DashboardScreen:
         return self.view_control
 
     async def load(self):
-        self.loading.visible = True
+        if self.loading:
+            return
+        self.loading = True
+        try:
+            await self._load()
+        finally:
+            self.loading = False
+            self.refresh_bar.visible = False
+            self.view_control.loading_state.finish()
+            self.page.update()
+
+    async def _load(self):
+        session_revision = getattr(self.app, "session_revision", 0)
+        self.error = None
+        # First open has nothing to keep on screen, so its skeleton shows at
+        # once; a refresh keeps the old figures visible behind a thin bar.
+        first_open = not self.content.controls
+        if first_open:
+            self.view_control.loading_state.start(immediate=True)
+        if not first_open:
+            self.refresh_bar.visible = True
         self.page.update()
         try:
-            self.app.overview = await self.app.api.overview()
+            overview = await self.app.api.overview()
+            if session_revision != getattr(self.app, "session_revision", 0):
+                return
+            self.app.overview = overview
         except Unauthenticated:
+            self.loading = False
+            self.view_control.loading_state.finish()
+            self.refresh_bar.visible = False
             await self.app.logout()
             return
-        except Exception as exc:  # noqa: BLE001
-            self.content.controls = [
-                card(ft.Text(error_message(exc), size=14, color=INK))
-            ]
-            self.loading.visible = False
-            self.page.update()
+        except Exception as exc:  # noqa: BLE001 - shown with a retry
+            self.error = error_message(exc)
+            self.loading = False
+            self.render()
             return
+
+        # Paint the core figures before fetching the optional balance sketch.
         self.render()
-        self.loading.visible = False
+        self.refresh_bar.visible = True
         self.page.update()
 
+        # The balance sketch is optional: if the timeline can't be fetched
+        # the dashboard still works, just without the card.
+        try:
+            timeline = await self.app.api.timeline(view="until_next_payment")
+            if session_revision != getattr(self.app, "session_revision", 0):
+                return
+            self.series = balance_series(timeline.get("events"))
+        except Unauthenticated:
+            self.loading = False
+            self.refresh_bar.visible = False
+            await self.app.logout()
+            return
+        except Exception:  # noqa: BLE001 - keep a prior chart on refresh
+            self.chart_error = True
+        else:
+            self.chart_error = False
+
+        self.loading = False
+        self.render()
+        self.app.note_goal_progress(self.app.overview.get("savings_goals"))
+
     def render(self):
-        # The avatar initials depend on the response, so rebuild the bar too.
-        self.view_control.controls[0].content = self._top_bar()
+        self.view_control.body_slot.visible = True
+        self.view_control.loading_state.finish()
+        self.refresh_bar.visible = False
+
+        if self.error is not None and not self.app.overview:
+            self.content.controls = [
+                error_card(
+                    self.error,
+                    on_retry=lambda e: self.page.run_task(self.load),
+                )
+            ]
+            self.page.update()
+            return
 
         overview = self.app.overview or {}
         currency = overview.get("currency") or self.default_currency
@@ -233,74 +272,96 @@ class DashboardScreen:
 
         if next_payment.get("expected_date"):
             lead = (
-                "Here is what needs your attention before "
-                f"{format_date(next_payment['expected_date'])}."
+                t('A clear view of your plan before {v0}.', v0=format_date(next_payment['expected_date']))
             )
         else:
-            lead = "Add an expected payment to see what is coming up."
+            lead = t('A clearer picture starts with your next expected payment.')
 
         controls: list[ft.Control] = [
-            caption("ILLUSTRATIVE DATA"),
-            ft.Text(
-                f"{greeting()}, {name}",
-                size=26,
-                weight=ft.FontWeight.W_700,
-                color=INK,
-            ),
-            ft.Text(lead, size=14, color=MUTED),
-            primary_button(
-                "+ Add transaction",
-                lambda e: self._not_available("Adding transactions"),
-                expand=True,
-            ),
+            self.refresh_bar,
+            page_title(t("{v0}, {v1}", v0=greeting(), v1=name), lead),
         ]
+        if self.error:
+            controls.insert(2, error_card(
+                t('Could not refresh. Showing the last loaded figures. {v0}', v0=self.error),
+                on_retry=lambda e: self.page.run_task(self.load)))
+        if getattr(self, "chart_error", False):
+            controls.append(error_card(
+                t('The planned balance chart could not be refreshed.'),
+                on_retry=lambda e: self.page.run_task(self.load)))
 
         for alert in alerts[:2]:
-            controls.append(alert_banner(alert, lambda e: self._not_available("Review")))
+            controls.append(
+                alert_banner(
+                    alert,
+                    lambda e: self.page.run_task(self.app.open_tab, "cashflow"),
+                )
+            )
 
         controls.append(
-            money_card(
-                "Available now",
+            stat_card(
+                t('Available now'),
                 money(overview.get("available_now"), currency),
-                "Confirmed money you can use today",
+                t('Confirmed money you can use today'),
+                featured=True,
+                icon=ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED,
             )
         )
+        controls.append(action_row(
+            primary_button(t('+ Add transaction'), lambda e: self.page.run_task(
+                self.app.open_transaction_form), expand=True),
+            secondary_button(t('+ Add goal'), lambda e: self.page.run_task(
+                self.app.open_goal_form), expand=True),
+        ))
         controls.append(
-            money_card(
-                "Projected after planned events",
+            stat_card(
+                t('Projected after planned events'),
                 money(overview.get("projected_balance"), currency),
-                "Estimate if expected income arrives"
+                t('Estimate if expected income arrives')
                 if overview.get("forecast_is_estimate", True)
-                else "Projected from your latest update",
+                else t('Projected from your latest update'),
+                icon=ft.Icons.INSIGHTS_OUTLINED,
             )
         )
+
+        if self.series:
+            controls.append(
+                card(
+                    ft.Column(
+                        spacing=SPACE_M,
+                        controls=[
+                            caption(t('PLANNED BALANCE')),
+                            balance_bars(self.series, currency),
+                        ],
+                    )
+                )
+            )
 
         if next_payment:
             controls.append(
                 ft.Container(
                     bgcolor=INK,
-                    border_radius=8,
-                    padding=16,
+                    border_radius=RADIUS,
+                    padding=SPACE_L,
                     content=ft.Column(
-                        spacing=6,
+                        spacing=SPACE_S - 2,
                         controls=[
                             ft.Text(
-                                "NEXT EXPECTED PAYMENT",
-                                size=11,
+                                t('NEXT EXPECTED PAYMENT'),
+                                size=CAPTION_SIZE,
                                 weight=ft.FontWeight.W_600,
-                                color=BORDER,
+                                color=ON_INK_MUTED,
                             ),
                             ft.Text(
                                 money(next_payment.get("amount"), currency),
-                                size=30,
+                                size=CARD_VALUE,
                                 weight=ft.FontWeight.W_700,
                                 color=SURFACE,
                             ),
                             ft.Text(
-                                f"{next_payment.get('source') or 'Expected'} · "
-                                f"{format_date(next_payment.get('expected_date'))}",
-                                size=13,
-                                color=BORDER,
+                                t('{v0} · {v1}', v0=next_payment.get('source') or 'Expected', v1=format_date(next_payment.get('expected_date'))),
+                                size=BODY_SM,
+                                color=ON_INK,
                             ),
                         ],
                     ),
@@ -313,55 +374,89 @@ class DashboardScreen:
             controls.append(
                 card(
                     ft.Column(
-                        spacing=8,
+                        spacing=SPACE_S,
                         controls=[
-                            caption("SAVINGS GOAL"),
+                            caption(t('SAVINGS GOAL')),
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text(goal.get("name") or "Goal", size=16, color=INK),
+                                    ft.Text(goal.get("name") or t('Goal'), size=HEADING,
+                                            color=INK, expand=True),
                                     ft.Text(
-                                        f"{round(goal.get('progress_percentage') or 0)}%",
-                                        size=14,
+                                        t('{v0}%', v0=round(goal.get('progress_percentage') or 0)),
+                                        size=BODY,
                                         weight=ft.FontWeight.W_600,
                                         color=INK,
                                     ),
                                 ],
                             ),
-                            ft.ProgressBar(
-                                value=min(
-                                    float(goal.get("progress_percentage") or 0) / 100, 1
-                                ),
-                                color=INK,
-                                bgcolor=BORDER,
-                                bar_height=6,
-                                border_radius=3,
-                            ),
-                            ft.Text(
-                                f"{money(goal.get('saved_amount'), currency)} saved of "
-                                f"{money(goal.get('target_amount'), currency)}",
-                                size=13,
-                                color=MUTED,
-                            ),
+                            savings_progress(goal, currency),
+                            text_button(t('View savings goals'), lambda e:
+                                self.page.run_task(self.app.open_tab, "goals")),
                         ],
                     )
                 )
             )
 
+        if not goals and (alerts or next_payment):
+            controls.append(card(ft.Column(spacing=SPACE_S, controls=[
+                caption(t('YOUR NEXT STEP')),
+                heading(t('Choose a savings goal')),
+                detail_text(t('Pick a target that matters to you. There is no required amount or schedule; progress follows what you record.')),
+                text_button(t('Create a goal'), lambda e: self.page.run_task(
+                    self.app.open_goal_form)),
+            ])))
+
+        if not goals and not alerts and not next_payment:
+            # A brand-new plan: everything below is built from what the user
+            # enters, so point at the two things that make it useful.
+            controls.append(
+                empty_state(
+                    t('Nothing to show yet'),
+                    t('Add an expected payment and a savings goal. Your forecast and progress build from what you enter.'),
+                    icon=ft.Icons.START_OUTLINED,
+                    action=ft.Row(
+                        spacing=SPACE_S,
+                        controls=[
+                            ft.Column(
+                                expand=True,
+                                controls=[
+                                    primary_button(
+                                        t('+ Add transaction'),
+                                        lambda e: self.page.run_task(
+                                            self.app.open_transaction_form
+                                        ),
+                                        expand=True,
+                                    )
+                                ],
+                            ),
+                            ft.Column(
+                                expand=True,
+                                controls=[
+                                    secondary_button(
+                                        t('+ Add goal'),
+                                        lambda e: self.page.run_task(
+                                            self.app.open_goal_form
+                                        ),
+                                        expand=True,
+                                    )
+                                ],
+                            ),
+                        ],
+                    ),
+                )
+            )
+
         controls.append(
-            ft.Container(
-                padding=ft.Padding.only(top=8),
-                content=text_button(
-                    "Edit my plan",
-                    lambda e: self.page.run_task(self.app.start_onboarding),
-                ),
+            ft.Row(
+                controls=[
+                    text_button(
+                        t('Edit my plan'),
+                        lambda e: self.page.run_task(self.app.start_onboarding),
+                    )
+                ],
             )
         )
 
         self.content.controls = controls
         self.page.update()
-
-    def _not_available(self, what: str):
-        self.page.show_dialog(
-            ft.SnackBar(ft.Text(f"{what} is not available yet."))
-        )

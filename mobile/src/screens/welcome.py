@@ -5,37 +5,34 @@ authentication. Tapping "Create account" or "Log in" swaps the auth form in
 below the copy instead of navigating away.
 """
 
+from i18n import t
+from i18n import LANGUAGES
+
 import flet as ft
 
-from screens.auth import AuthPanel
 from theme import (
     BG,
-    BORDER,
+    BODY_SM,
+    CAPTION_SIZE,
+    HEADING,
     INK,
+    INPUT_SIZE,
     MUTED,
-    RADIUS,
-    logo,
+    PRIMARY,
+    SPACE_M,
+    TITLE_LG,
     primary_button,
     secondary_button,
     style_input,
 )
 
-LANGUAGES = {
-    "en": "English",
-    "zu": "isiZulu",
-    "af": "Afrikaans",
-    "xh": "isiXhosa",
-    "st": "Sesotho",
-}
-
-LANGUAGE_PREF_KEY = "language"
-
+from screens.auth import AuthPanel
+from widgets import action_row
 
 class WelcomeScreen:
     def __init__(self, page: ft.Page, app):
         self.page = page
         self.app = app
-        self.prefs = ft.SharedPreferences()
 
         self.language = style_input(
             ft.Dropdown(
@@ -49,107 +46,127 @@ class WelcomeScreen:
             )
         )
 
-        self.actions = ft.Row(
-            spacing=10,
+        self.actions = action_row(
+            primary_button(t('Create account'), lambda e: self.show_auth(register=True), expand=True),
+            secondary_button(t('Log in'), lambda e: self.show_auth(register=False), expand=True),
+        )
+
+        self.form_slot = ft.Column(
+            tight=True, spacing=SPACE_M, visible=False,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH, controls=[],
+        )
+
+        self.brand_image = ft.Image(
+            src="flowshelterlogo.png", width=240, height=160,
+            fit=ft.BoxFit.CONTAIN,
+        )
+        self.intro = ft.Column(
+            spacing=SPACE_M,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             controls=[
-                ft.Column(
-                    expand=True,
-                    controls=[
-                        primary_button(
-                            "Create account",
-                            lambda e: self.show_auth(register=True),
-                            expand=True,
-                        )
-                    ],
+                ft.Text(
+                    t('MONEY PLANNING FOR FREELANCERS'),
+                    size=CAPTION_SIZE, weight=ft.FontWeight.W_600,
+                    color=MUTED, text_align=ft.TextAlign.CENTER,
                 ),
-                ft.Column(
-                    expand=True,
-                    controls=[
-                        secondary_button(
-                            "Log in",
-                            lambda e: self.show_auth(register=False),
-                            expand=True,
-                        )
+                ft.Text(
+                    spans=[
+                        ft.TextSpan(
+                            t('Plan for the days\n'),
+                            style=ft.TextStyle(
+                                color=PRIMARY,
+                                italic=True,
+                                weight=ft.FontWeight.W_700,
+                            ),
+                        ),
+                        ft.TextSpan(
+                            t('between paydays'),
+                            style=ft.TextStyle(
+                                color=PRIMARY,
+                                italic=True,
+                                weight=ft.FontWeight.W_700,
+                            ),
+                        ),
                     ],
+                    size=TITLE_LG,
+                    weight=ft.FontWeight.W_600, color=INK,
+                    style=ft.TextStyle(height=1.2, letter_spacing=-0.6),
+                    text_align=ft.TextAlign.CENTER,
+                ),
+                ft.Text(
+                    t('Manage irregular income, cover essential bills, and save towards your goals with a clearer plan.'), size=INPUT_SIZE,
+                    color=MUTED, text_align=ft.TextAlign.CENTER,
                 ),
             ],
         )
-
-        self.form_slot = ft.Column(tight=True, spacing=12, controls=[])
-
         self.body = ft.Column(
-            expand=True,
-            spacing=0,
+            spacing=24,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             controls=[
-                logo(),
-                ft.Container(expand=True),
-                ft.Text(
-                    "MONEY PLANNING FOR FREELANCERS",
-                    size=11,
-                    weight=ft.FontWeight.W_600,
-                    color=MUTED,
+                ft.Container(
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Column(
+                        spacing=8,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self.brand_image,
+                            ft.Text(
+                                "FlowShelter", size=HEADING,
+                                weight=ft.FontWeight.W_700, color=PRIMARY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ],
+                    ),
                 ),
-                ft.Container(height=10),
-                ft.Text(
-                    "Know what is safe to spend.",
-                    size=34,
-                    weight=ft.FontWeight.W_700,
-                    color=INK,
+                self.intro,
+                ft.Column(
+                    spacing=8,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                    controls=[
+                        ft.Text(t('Language'), size=BODY_SM,
+                                weight=ft.FontWeight.W_600, color=INK),
+                        self.language,
+                    ],
                 ),
-                ft.Container(height=8),
-                ft.Text(
-                    "Plan around irregular income, essential bills and savings "
-                    "goals — without the guesswork.",
-                    size=15,
-                    color=MUTED,
-                ),
-                ft.Container(height=28),
-                ft.Text("Language", size=13, weight=ft.FontWeight.W_600, color=INK),
-                ft.Container(height=6),
-                self.language,
-                ft.Container(height=16),
                 self.actions,
                 self.form_slot,
-                ft.Container(height=12),
                 ft.Text(
-                    "Your language preference is saved on this device.",
-                    size=11,
-                    color=MUTED,
+                    t('Your language preference is saved on this device.'),
+                    size=CAPTION_SIZE, color=MUTED,
+                    text_align=ft.TextAlign.CENTER,
                 ),
-                ft.Container(height=24),
             ],
         )
 
-        self.page.run_task(self._restore_language)
 
     # ---- layout ----------------------------------------------------------
     def view(self) -> ft.View:
         return ft.View(
             route="/",
-            padding=ft.Padding.symmetric(horizontal=24, vertical=16),
+            padding=ft.Padding.symmetric(horizontal=24, vertical=32),
             bgcolor=BG,
-            controls=[self.body],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[ft.Container(width=440, content=self.body)],
             scroll=ft.ScrollMode.AUTO,
         )
 
     def show_auth(self, register: bool):
         self.actions.visible = False
+        self.intro.visible = False
+        self.brand_image.width, self.brand_image.height = 180, 120
+        self.form_slot.visible = True
         self.form_slot.controls = [AuthPanel(self.app, register)]
         self.page.update()
 
     def show_welcome(self):
         self.form_slot.controls = []
         self.actions.visible = True
+        self.intro.visible = True
+        self.brand_image.width, self.brand_image.height = 240, 160
+        self.form_slot.visible = False
         self.page.update()
 
     # ---- language --------------------------------------------------------
-    async def _restore_language(self):
-        saved = await self.prefs.get(LANGUAGE_PREF_KEY)
-        if saved in LANGUAGES:
-            self.language.value = saved
-            self.page.update()
-
     def _language_changed(self, e):
-        self.page.run_task(
-            self.prefs.set, LANGUAGE_PREF_KEY, self.language.value or "en"
-        )
+        self.app.set_language(self.language.value or "en")
+        self.page.run_task(self.app.save_language, self.language.value or "en")

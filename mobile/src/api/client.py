@@ -5,7 +5,11 @@ async; run them from UI handlers with `page.run_task(...)` or from async setup
 code with `await`.
 """
 
+from i18n import t
+from i18n import translated_server_text
+
 import os
+import asyncio
 
 import flet as ft
 import httpx
@@ -33,6 +37,8 @@ class Api:
         ).rstrip("/")
         self._token: str | None = None
         self._prefs: ft.SharedPreferences | None = None
+        self._options_cache = None
+        self._options_lock = asyncio.Lock()
 
     # ---- token lifecycle -------------------------------------------------
     async def load_token(self, prefs: ft.SharedPreferences) -> str | None:
@@ -47,6 +53,7 @@ class Api:
             await self._prefs.set(TOKEN_KEY, token)
 
     async def clear_token(self) -> None:
+        self._options_cache = None
         self._token = None
         if self._prefs is not None:
             await self._prefs.remove(TOKEN_KEY)
@@ -129,6 +136,98 @@ class Api:
     async def upcoming(self) -> dict:
         return await self._request("GET", "/api/dashboard/upcoming")
 
+    # ---- cash flow -------------------------------------------------------
+    async def timeline(self, view: str = "until_next_payment", month=None) -> dict:
+        params = {"view": view}
+        if month:
+            params["month"] = month
+        return await self._request("GET", "/api/cashflow/timeline", params=params)
+
+    # ---- transactions ----------------------------------------------------
+    async def transactions(self, month=None, from_date=None, kind="all") -> dict:
+        params = {"kind": kind}
+        if month:
+            params["month"] = month
+        if from_date:
+            params["from_date"] = from_date
+        return await self._request("GET", "/api/transactions", params=params)
+
+    async def transaction_options(self) -> dict:
+        async with self._options_lock:
+            if self._options_cache is None:
+                self._options_cache = await self._request("GET", "/api/transactions/options")
+            from copy import deepcopy
+            return deepcopy(self._options_cache)
+
+    async def create_transaction(self, **fields) -> dict:
+        return await self._request(
+            "POST", "/api/transactions", json=_drop_empty(fields)
+        )
+
+    async def transaction(self, transaction_id: int) -> dict:
+        return await self._request("GET", f"/api/transactions/{transaction_id}")
+
+    async def update_transaction(self, transaction_id: int, **fields) -> dict:
+        return await self._request(
+            "PATCH", f"/api/transactions/{transaction_id}", json=_drop_empty(fields)
+        )
+
+    async def clear_transaction_fields(self, transaction_id: int, **fields) -> dict:
+        """PATCH where a None/blank value really clears the field."""
+        return await self._request(
+            "PATCH",
+            f"/api/transactions/{transaction_id}",
+            json=_with_nulls(fields),
+        )
+
+    async def delete_transaction(self, transaction_id: int) -> None:
+        await self._request("DELETE", f"/api/transactions/{transaction_id}")
+
+    async def confirm_transaction(self, transaction_id: int) -> dict:
+        return await self._request(
+            "POST", f"/api/transactions/{transaction_id}/confirm"
+        )
+
+    async def mark_income_received(self, income_id: int) -> dict:
+        return await self._request(
+            "POST", f"/api/transactions/incomes/{income_id}/mark-received"
+        )
+
+    async def mark_commitment_paid(self, commitment_id: int) -> dict:
+        return await self._request(
+            "POST", f"/api/transactions/commitments/{commitment_id}/mark-paid"
+        )
+
+    # ---- goals -----------------------------------------------------------
+    async def goals(self) -> list:
+        return await self._request("GET", "/api/goals")
+
+    async def create_goal(self, **fields) -> dict:
+        return await self._request("POST", "/api/goals", json=_drop_empty(fields))
+
+    async def update_goal(self, goal_id: int, **fields) -> dict:
+        return await self._request(
+            "PATCH", f"/api/goals/{goal_id}", json=_drop_empty(fields)
+        )
+
+    async def clear_goal_fields(self, goal_id: int, **fields) -> dict:
+        """PATCH where a None value really clears the field (e.g. a date)."""
+        return await self._request(
+            "PATCH", f"/api/goals/{goal_id}", json=_with_nulls(fields)
+        )
+
+    async def delete_goal(self, goal_id: int) -> None:
+        await self._request("DELETE", f"/api/goals/{goal_id}")
+
+    async def add_contribution(
+        self, goal_id: int, amount, contributed_on=None
+    ) -> dict:
+        return await self._request(
+            "POST",
+            f"/api/goals/{goal_id}/contributions",
+            json=_drop_empty({"amount": amount, "contributed_on": contributed_on}),
+        )
+
 
 def _drop_empty(value):
     """Remove None and blank entries recursively, so optional fields are left
@@ -142,6 +241,17 @@ def _drop_empty(value):
         }
     if isinstance(value, list):
         return [_drop_empty(v) for v in value]
+    return value
+
+
+def _with_nulls(value):
+    """Keep explicit nulls (the API reads them as 'clear this field') but
+    still drop blanks from strings that were never set."""
+
+    if isinstance(value, dict):
+        return {k: _with_nulls(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_with_nulls(v) for v in value]
     return value
 
 
@@ -163,20 +273,20 @@ def error_message(exc: Exception) -> str:
     """Turn an ApiError into something worth showing a user."""
 
     if isinstance(exc, httpx.ConnectError):
-        return "Can't reach the Flow Shelter server. Check your connection."
+        return t("Can't reach the Flow Shelter server. Check your connection.")
     if isinstance(exc, httpx.TimeoutException):
-        return "The server took too long to respond. Try again."
+        return t('The server took too long to respond. Try again.')
     if isinstance(exc, ApiError):
         body = exc.body
         if isinstance(body, dict):
             detail = body.get("detail")
             if isinstance(detail, str):
-                return detail
+                return translated_server_text(detail)
             if isinstance(detail, dict) and detail.get("message"):
-                return detail["message"]
+                return translated_server_text(detail["message"])
             if isinstance(detail, list) and detail:
                 first = detail[0]
                 field = ".".join(str(p) for p in first.get("loc", [])[1:])
-                return f"{field.replace('_', ' ').capitalize()}: {first.get('msg', 'invalid')}"
-        return f"Something went wrong ({exc.status})."
-    return "Something went wrong. Please try again."
+                return f"{field.replace('_', ' ').capitalize()}: {first.get('msg', t('invalid'))}"
+        return t('Something went wrong ({v0}).', v0=exc.status)
+    return t('Something went wrong. Please try again.')

@@ -9,27 +9,39 @@ Each screen:
 Existing values are kept if the user leaves a field alone.
 """
 
+from i18n import t
+
 from datetime import date
-from decimal import Decimal, InvalidOperation
 
 import flet as ft
 
-from api.client import error_message
 from theme import (
     BG,
+    BODY,
+    BODY_SM,
     BORDER,
+    CAPTION_SIZE,
     INK,
+    INPUT_SIZE,
     MUTED,
     NOTE_BG,
+    RADIUS,
+    SPACE_L,
+    SPACE_M,
+    SPACE_S,
     SURFACE,
     format_date,
     money,
     note,
     primary_button,
     secondary_button,
+    shown_amount,
     style_input,
     text_button,
+    to_amount,
 )
+
+from api.client import error_message
 from widgets import (
     DateField,
     card,
@@ -38,64 +50,37 @@ from widgets import (
     nav_footer,
     onboarding_view,
     progress_header,
+    set_busy,
     set_error,
     step_title,
+    submit_button,
     top_bar,
 )
 
 INCOME_PATTERNS = [
-    ft.DropdownOption(key="fixed", text="Fixed"),
-    ft.DropdownOption(key="irregular", text="Irregular"),
-    ft.DropdownOption(key="mixed", text="Mixed"),
+    ft.DropdownOption(key="fixed", text=t('Fixed')),
+    ft.DropdownOption(key="irregular", text=t('Irregular')),
+    ft.DropdownOption(key="mixed", text=t('Mixed')),
 ]
 
 CURRENCIES = [
-    ft.DropdownOption(key="ZAR", text="ZAR — South African rand"),
-    ft.DropdownOption(key="USD", text="USD — US dollar"),
-    ft.DropdownOption(key="EUR", text="EUR — Euro"),
-    ft.DropdownOption(key="GBP", text="GBP — British pound"),
+    ft.DropdownOption(key="ZAR", text=t('ZAR — South African rand')),
+    ft.DropdownOption(key="USD", text=t('USD — US dollar')),
+    ft.DropdownOption(key="EUR", text=t('EUR — Euro')),
+    ft.DropdownOption(key="GBP", text=t('GBP — British pound')),
 ]
 
 PRIORITIES = [
-    ft.DropdownOption(key="low", text="Low"),
-    ft.DropdownOption(key="medium", text="Medium"),
-    ft.DropdownOption(key="high", text="High"),
+    ft.DropdownOption(key="low", text=t('Low')),
+    ft.DropdownOption(key="medium", text=t('Medium')),
+    ft.DropdownOption(key="high", text=t('High')),
 ]
 
 
-def _to_amount(raw) -> str | None:
-    """'R 18 450' / '18 450,50' / '18450' -> '18450.00' (None when blank).
-
-    Raises ValueError for anything that is not a number, so a typo shows up
-    next to the field instead of coming back as a 422.
-    """
-
-    if raw is None:
-        return None
-    cleaned = (
-        str(raw)
-        .replace("R", "")
-        .replace(" ", "")
-        .replace(" ", "")
-        .replace(",", ".")
-        .strip()
-    )
-    if not cleaned:
-        return None
-    if cleaned.count(".") > 1:
-        raise ValueError(f"“{raw}” is not a valid amount.")
-    try:
-        return f"{Decimal(cleaned):.2f}"
-    except InvalidOperation:
-        raise ValueError(f"“{raw}” is not a valid amount.") from None
-
-
-def _shown_amount(value) -> str:
-    """Render an API money string in a text field without '.0' noise."""
-
-    if value in (None, ""):
-        return ""
-    return _to_amount(value) or ""
+# Amount parsing lives in theme so the cash-flow forms share it; these short
+# names keep the call sites in this module readable.
+_to_amount = to_amount
+_shown_amount = shown_amount
 
 
 class OnboardingScreen:
@@ -105,11 +90,20 @@ class OnboardingScreen:
     title = ""
     subtitle = None
 
+    continue_label = t('Continue')
+
     def __init__(self, page: ft.Page, app):
         self.page = page
         self.app = app
         self.draft = app.draft or {}
         self.error = error_text()
+        # One button per screen, reused across renders so the spinner sits
+        # exactly where the user tapped.
+        self.submit = submit_button(
+            self.continue_label,
+            lambda e: self.save_and(next_step=self.step + 1),
+        )
+        self.skip_button: ft.Control | None = None
 
     # ---- to be implemented by each step ---------------------------------
     def body(self) -> list[ft.Control]:
@@ -119,14 +113,11 @@ class OnboardingScreen:
         return {}
 
     def footer(self) -> ft.Control:
-        return nav_footer(
-            on_back=lambda e: self.back(),
-            on_continue=lambda e: self.save_and(next_step=self.step + 1),
-        )
+        return nav_footer(on_back=lambda e: self.back(), submit=self.submit)
 
     # ---- helpers ---------------------------------------------------------
     def back(self):
-        if self.step <= 1:
+        if self.step <= 1 or self.submit.disabled:
             return
         self.app.show_step(self.step - 1)
 
@@ -143,10 +134,26 @@ class OnboardingScreen:
         )
 
     def save_and(self, next_step: int | None = None, exit_on_success=False):
-        set_error(self.error, None, self.page)
+        if self.submit.disabled:
+            return  # a save is already in flight
+        self._set_busy(True)
         self.page.run_task(self._save, next_step, exit_on_success)
 
+    def _set_busy(self, busy: bool):
+        set_busy(self.submit, busy)
+        if self.skip_button is not None:
+            self.skip_button.disabled = busy
+        self.page.update()
+
+    def _clear_error(self):
+        self.error.value = ""
+        self.error.visible = False
+
     async def _save(self, next_step, exit_on_success):
+        # Clear last error and show the spinner in one paint, so the old
+        # message never sits next to a button that looks ready to press again.
+        self._clear_error()
+        self._set_busy(True)
         try:
             data = self.payload()
             if data is not None:
@@ -155,15 +162,25 @@ class OnboardingScreen:
             # resumes here rather than skipping ahead to a screen never shown.
             await self.app.api.set_step(self.step)
         except ValueError as exc:
+            self._set_busy(False)
             set_error(self.error, str(exc), self.page)
             return
         except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            self._set_busy(False)
             set_error(self.error, error_message(exc), self.page)
             return
+        self._set_busy(False)
         if exit_on_success:
             await self.app.open_dashboard()
             return
-        await self.app.reload_draft()
+        self._set_busy(True)
+        try:
+            await self.app.reload_draft()
+        except Exception as exc:
+            set_error(self.error, error_message(exc), self.page)
+            return
+        finally:
+            self._set_busy(False)
         self.app.show_step(next_step)
 
 
@@ -172,10 +189,9 @@ class OnboardingScreen:
 # ---------------------------------------------------------------------------
 class WorkStep(OnboardingScreen):
     step = 1
-    title = "Tell us about your work"
+    title = t('Tell us about your work')
     subtitle = (
-        "This helps us shape a useful first cash-flow plan. "
-        "No client details needed."
+        t('This helps us shape a useful first cash-flow plan. No client details needed.')
     )
 
     def __init__(self, page, app):
@@ -183,7 +199,7 @@ class WorkStep(OnboardingScreen):
         profile = self.draft.get("financial_profile") or {}
 
         self.work_type = style_input(
-            ft.TextField(label="e.g. Graphic designer", value=profile.get("work_type") or "")
+            ft.TextField(label=t('e.g. Graphic designer'), value=profile.get("work_type") or "")
         )
         self.income_pattern = style_input(
             ft.Dropdown(
@@ -211,18 +227,18 @@ class WorkStep(OnboardingScreen):
 
     def body(self):
         return [
-            labeled("Type of freelance work *", self.work_type),
-            labeled("Income pattern", self.income_pattern),
-            labeled("Typical income amount (optional)", self.typical_income),
-            labeled("Next expected payment date (optional)", self.next_date.field),
-            labeled("Next expected payment amount (optional)", self.next_amount),
-            labeled("Currency", self.currency),
+            labeled(t('Type of freelance work *'), self.work_type),
+            labeled(t('Income pattern'), self.income_pattern),
+            labeled(t('Typical income amount (optional)'), self.typical_income),
+            labeled(t('Next expected payment date (optional)'), self.next_date.field),
+            labeled(t('Next expected payment amount (optional)'), self.next_amount),
+            labeled(t('Currency'), self.currency),
             ft.Divider(color=BORDER),
         ]
 
     def payload(self) -> dict:
         if not self.work_type.value.strip():
-            raise ValueError("Work type is required.")
+            raise ValueError(t('Work type is required.'))
 
         profile = {
             "work_type": self.work_type.value.strip(),
@@ -251,12 +267,18 @@ class WorkStep(OnboardingScreen):
 
     def footer(self):
         # Nothing on step 1 is required to leave, so both buttons just move on.
-        return nav_footer(
-            on_back=lambda e: self.save_and(exit_on_success=True),
-            skip_label="Skip optional details",
-            on_continue=lambda e: self.save_and(next_step=2),
-            continue_label="Continue",
-            back_label="Back",
+        skip = ft.TextButton(
+            content=ft.Text(t('Save & exit'), size=BODY_SM, color=INK),
+            style=ft.ButtonStyle(
+                overlay_color=ft.Colors.TRANSPARENT,
+                padding=ft.Padding.symmetric(horizontal=0),
+            ),
+            on_click=lambda e: self.save_and(exit_on_success=True),
+        )
+        self.skip_button = skip
+        return ft.Row(
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[skip, self.submit],
         )
 
 
@@ -265,10 +287,9 @@ class WorkStep(OnboardingScreen):
 # ---------------------------------------------------------------------------
 class BalanceStep(OnboardingScreen):
     step = 2
-    title = "What do you have available now?"
+    title = t('What do you have available now?')
     subtitle = (
-        "Only include money you can currently use. "
-        "Do not include expected payments."
+        t('Only include money you can currently use. Do not include expected payments.')
     )
 
     def __init__(self, page, app):
@@ -291,11 +312,10 @@ class BalanceStep(OnboardingScreen):
 
     def body(self):
         return [
-            labeled("Current available balance *", self.available),
-            labeled("Existing savings (optional)", self.savings),
+            labeled(t('Current available balance *'), self.available),
+            labeled(t('Existing savings (optional)'), self.savings),
             note(
-                "Use money you have right now. Payments you are waiting on "
-                "belong on the next step, so they are not counted twice."
+                t('Use money you have right now. Payments you are waiting on belong on the next step, so they are not counted twice.')
             ),
             ft.Divider(color=BORDER),
         ]
@@ -303,7 +323,7 @@ class BalanceStep(OnboardingScreen):
     def payload(self) -> dict:
         available = _to_amount(self.available.value)
         if available is None:
-            raise ValueError("Available balance is required.")
+            raise ValueError(t('Available balance is required.'))
         data = {"financial_balance": {"available_balance": available}}
         savings = _to_amount(self.savings.value)
         if savings is not None:
@@ -316,31 +336,31 @@ class BalanceStep(OnboardingScreen):
 # ---------------------------------------------------------------------------
 class IncomeStep(OnboardingScreen):
     step = 3
-    title = "What income are you expecting?"
+    title = t('What income are you expecting?')
     subtitle = (
-        "Expected money is kept separate until you mark it received."
+        t('Expected money is kept separate until you mark it received.')
     )
 
     def __init__(self, page, app):
         super().__init__(page, app)
         existing = self.draft.get("expected_incomes") or []
-        self.rows = ft.Column(spacing=12, controls=[])
+        self.rows = ft.Column(spacing=SPACE_M, controls=[])
         for item in existing or [{}]:
             self._add_row(item)
         self.add_button = ft.Button(
-            content="+ Add another income",
+            content=t("+ Add another income"),
             color=INK,
             style=ft.ButtonStyle(
                 bgcolor=SURFACE,
                 side=ft.BorderSide(1, BORDER),
-                shape=ft.RoundedRectangleBorder(radius=8),
+                shape=ft.RoundedRectangleBorder(radius=RADIUS),
             ),
             on_click=lambda e: self._add_row({}),
         )
 
     def _add_row(self, item: dict):
         source = style_input(
-            ft.TextField(label="e.g. Mokoena Studio project", value=item.get("source") or "")
+            ft.TextField(label=t('e.g. Mokoena Studio project'), value=item.get("source") or "")
         )
         amount = style_input(
             ft.TextField(
@@ -353,7 +373,7 @@ class IncomeStep(OnboardingScreen):
         if item.get("expected_date"):
             when.value = item["expected_date"]
 
-        row = ft.Column(spacing=10)
+        row = ft.Column(spacing=SPACE_S)
         row.data = {"source": source, "amount": amount, "date": when}
 
         def remove(e, r=row):
@@ -363,22 +383,22 @@ class IncomeStep(OnboardingScreen):
         row.controls = [
             card(
                 ft.Column(
-                    spacing=10,
+                    spacing=SPACE_S,
                     controls=[
                         ft.Row(
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             controls=[
                                 ft.Text(
-                                    (item.get("source") or "New income"),
-                                    size=14,
+                                    (item.get("source") or t('New income')),
+                                    size=BODY,
                                     weight=ft.FontWeight.W_600,
                                     color=INK,
                                 ),
                                 ft.Container(
                                     content=ft.Text(
-                                        item.get("status", "expected").capitalize(),
-                                        size=11,
+                                        item.get("status", t('expected')).capitalize(),
+                                        size=CAPTION_SIZE,
                                         color=MUTED,
                                     ),
                                     border=ft.Border.all(1, BORDER),
@@ -389,9 +409,10 @@ class IncomeStep(OnboardingScreen):
                                 ),
                             ],
                         ),
-                        labeled("Amount", amount),
-                        labeled("Expected date", when.field),
-                        text_button("Remove", remove),
+                        labeled(t('Income source'), source),
+                        labeled(t('Amount'), amount),
+                        labeled(t('Expected date'), when.field),
+                        text_button(t('Remove'), remove),
                     ],
                 )
             )
@@ -403,7 +424,7 @@ class IncomeStep(OnboardingScreen):
         return [
             self.rows,
             self.add_button,
-            note("Leave an item out if you are not sure yet.", bg=NOTE_BG),
+            note(t('Leave an item out if you are not sure yet.'), bg=NOTE_BG),
             ft.Divider(color=BORDER),
         ]
 
@@ -416,9 +437,9 @@ class IncomeStep(OnboardingScreen):
             if not source and not amount:
                 continue
             if not source:
-                raise ValueError("Give each income a source.")
+                raise ValueError(t('Give each income a source.'))
             if not amount:
-                raise ValueError(f"Enter an amount for {source}.")
+                raise ValueError(t('Enter an amount for {v0}.', v0=source))
             items.append(
                 {
                     "source": source,
@@ -434,28 +455,28 @@ class IncomeStep(OnboardingScreen):
 # ---------------------------------------------------------------------------
 class CommitmentsStep(OnboardingScreen):
     step = 4
-    title = "What must you pay?"
-    subtitle = "Add essential expenses and upcoming commitments."
+    title = t('What must you pay?')
+    subtitle = t('Add essential expenses and upcoming commitments.')
 
     def __init__(self, page, app):
         super().__init__(page, app)
         existing = app.commitments or []
-        self.rows = ft.Column(spacing=12, controls=[])
+        self.rows = ft.Column(spacing=SPACE_M, controls=[])
         for item in existing or [{}]:
             self._add_row(item)
         self.add_button = ft.Button(
-            content="+ Add another expense",
+            content=t("+ Add another expense"),
             color=INK,
             style=ft.ButtonStyle(
                 bgcolor=SURFACE,
                 side=ft.BorderSide(1, BORDER),
-                shape=ft.RoundedRectangleBorder(radius=8),
+                shape=ft.RoundedRectangleBorder(radius=RADIUS),
             ),
             on_click=lambda e: self._add_row({}),
         )
 
     def _add_row(self, item: dict):
-        name = style_input(ft.TextField(label="e.g. Apartment rent", value=item.get("name") or ""))
+        name = style_input(ft.TextField(label=t('e.g. Apartment rent'), value=item.get("name") or ""))
         amount = style_input(
             ft.TextField(
                 label="R 0",
@@ -467,7 +488,7 @@ class CommitmentsStep(OnboardingScreen):
         if item.get("due_date"):
             due.value = item["due_date"]
 
-        row = ft.Column(spacing=10)
+        row = ft.Column(spacing=SPACE_S)
         row.data = {"name": name, "amount": amount, "date": due}
 
         def remove(e, r=row):
@@ -477,12 +498,12 @@ class CommitmentsStep(OnboardingScreen):
         row.controls = [
             card(
                 ft.Column(
-                    spacing=10,
+                    spacing=SPACE_S,
                     controls=[
-                        labeled("Expense", name),
-                        labeled("Amount", amount),
-                        labeled("Due date", due.field),
-                        text_button("Remove", remove),
+                        labeled(t('Expense'), name),
+                        labeled(t('Amount'), amount),
+                        labeled(t('Due date'), due.field),
+                        text_button(t('Remove'), remove),
                     ],
                 )
             )
@@ -495,8 +516,7 @@ class CommitmentsStep(OnboardingScreen):
             self.rows,
             self.add_button,
             note(
-                "Only add bills you have to pay. Leave an item out if you "
-                "are not sure yet."
+                t('Only add bills you have to pay. Leave an item out if you are not sure yet.')
             ),
             ft.Divider(color=BORDER),
         ]
@@ -511,9 +531,9 @@ class CommitmentsStep(OnboardingScreen):
             if not name and not amount:
                 continue
             if not name:
-                raise ValueError("Give each expense a name.")
+                raise ValueError(t('Give each expense a name.'))
             if not amount:
-                raise ValueError(f"Enter an amount for {name}.")
+                raise ValueError(t('Enter an amount for {v0}.', v0=name))
             items.append(
                 {
                     "name": name,
@@ -525,26 +545,45 @@ class CommitmentsStep(OnboardingScreen):
 
     def footer(self):
         return nav_footer(
-            on_back=lambda e: self.save_and(exit_on_success=True),
-            on_continue=lambda e: self.save_and(next_step=5),
-            continue_label="Review & continue",
+            on_back=lambda e: self.back(),
+            submit=self._submit_for(t('Review & continue'), next_step=5),
         )
+
+    def _submit_for(self, label: str, next_step: int) -> ft.Control:
+        """A footer primary with this step's own label, sharing the busy
+        treatment used by every other form."""
+
+        self.submit = submit_button(
+            label, lambda e: self.save_and(next_step=next_step)
+        )
+        return self.submit
 
     async def _save(self, next_step, exit_on_success):
         set_error(self.error, None, self.page)
+        self._set_busy(True)
         try:
             await self.app.api.save_commitments(self.payload())
             await self.app.api.set_step(4)
         except ValueError as exc:
+            self._set_busy(False)
             set_error(self.error, str(exc), self.page)
             return
         except Exception as exc:  # noqa: BLE001
+            self._set_busy(False)
             set_error(self.error, error_message(exc), self.page)
             return
+        self._set_busy(False)
         if exit_on_success:
             await self.app.open_dashboard()
             return
-        await self.app.reload_draft()
+        self._set_busy(True)
+        try:
+            await self.app.reload_draft()
+        except Exception as exc:
+            set_error(self.error, error_message(exc), self.page)
+            return
+        finally:
+            self._set_busy(False)
         self.app.show_step(5)
 
 
@@ -563,7 +602,7 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
     goal = goals[0] if goals else {}
     error = error_text()
 
-    name = style_input(ft.TextField(label="e.g. Emergency buffer", value=goal.get("name") or ""))
+    name = style_input(ft.TextField(label=t('e.g. Emergency buffer'), value=goal.get("name") or ""))
     target = style_input(
         ft.TextField(
             label="R 0",
@@ -585,25 +624,35 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
         ft.Dropdown(value=goal.get("priority") or "medium", options=PRIORITIES)
     )
 
-    saving = ft.Text(size=13, color=MUTED, visible=False)
+    submit = submit_button(
+        t('Create goal'), lambda e: page.run_task(run_goal, save_goal)
+    )
+    skip_button = secondary_button(
+        t('Skip for now'), lambda e: page.run_task(run_goal, skip), expand=True
+    )
 
     async def run_goal(action):
-        """Run a button action; ignore taps while one is in flight."""
+        """Run a button action, with both buttons busy while it is in flight.
 
-        if saving.visible:
+        The spinner sits on the action's own button (the same treatment as
+        the other forms), and a second tap cannot start a second request.
+        """
+
+        if submit.disabled:
             return
         if app.resuming:
             # Reopened at the goal step, so onboarding is effectively over:
             # go to the review rather than silently creating an empty goal.
             await app.show_starting_picture()
             return
-        saving.value = "Saving…"
-        saving.visible = True
+        set_busy(submit, True)
+        skip_button.disabled = True
         page.update()
         try:
             await action()
         finally:
-            saving.visible = False
+            set_busy(submit, False)
+            skip_button.disabled = False
             page.update()
 
     async def save_goal(e=None):
@@ -611,9 +660,9 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
         try:
             target_amount = _to_amount(target.value)
             if not name.value.strip():
-                raise ValueError("Goal name is required.")
+                raise ValueError(t('Goal name is required.'))
             if not target_amount:
-                raise ValueError("Target amount is required.")
+                raise ValueError(t('Target amount is required.'))
             item = {
                 "name": name.value.strip(),
                 "target_amount": target_amount,
@@ -645,37 +694,18 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
         await app.show_starting_picture()
 
     body = [
-        labeled("Goal name *", name),
-        labeled("Target amount *", target),
-        labeled("Already saved", saved),
-        labeled("Target date (optional)", target_date.field),
-        labeled("Priority (optional)", priority),
+        labeled(t('Goal name *'), name),
+        labeled(t('Target amount *'), target),
+        labeled(t('Already saved'), saved),
+        labeled(t('Target date (optional)'), target_date.field),
+        labeled(t('Priority (optional)'), priority),
         error,
-        saving,
         ft.Divider(color=BORDER),
         ft.Row(
-            spacing=10,
+            spacing=SPACE_S,
             controls=[
-                ft.Column(
-                    expand=True,
-                    controls=[
-                        secondary_button(
-                            "Skip for now",
-                            lambda e: page.run_task(run_goal, skip),
-                            expand=True,
-                        )
-                    ],
-                ),
-                ft.Column(
-                    expand=True,
-                    controls=[
-                        primary_button(
-                            "Create goal",
-                            lambda e: page.run_task(run_goal, save_goal),
-                            expand=True,
-                        )
-                    ],
-                ),
+                ft.Column(expand=True, controls=[skip_button]),
+                ft.Column(expand=True, controls=[submit]),
             ],
         ),
     ]
@@ -683,8 +713,8 @@ def goal_form_view(page: ft.Page, app) -> ft.View:
     return onboarding_view(
         page,
         step=5,
-        title="Set your first savings goal",
-        subtitle="Optional. You can create or change goals at any time.",
+        title=t('Set your first savings goal'),
+        subtitle=t('Optional. You can create or change goals at any time.'),
         body=body,
         footer=None,
         on_save_exit=lambda e: page.run_task(run_goal, skip),
@@ -699,7 +729,7 @@ def _figure(label: str, value: str, strong: bool = False) -> ft.Column:
     return ft.Column(
         spacing=2,
         controls=[
-            ft.Text(label, size=12, color=MUTED),
+            ft.Text(label, size=BODY_SM, color=MUTED),
             ft.Text(
                 value,
                 size=20 if strong else 16,
@@ -717,31 +747,30 @@ def starting_picture_view(page: ft.Page, app, overview: dict) -> ft.View:
     next_payment = overview.get("next_expected_payment") or {}
     goals = overview.get("savings_goals") or []
 
-    next_label = "No expected payment yet"
+    next_label = t('No expected payment yet')
     if next_payment:
         next_label = (
-            f"Next income  +{money(next_payment.get('amount'), currency)}  "
-            f"{format_date(next_payment.get('expected_date'))}"
+            t('Next income  +{v0}  {v1}', v0=money(next_payment.get('amount'), currency), v1=format_date(next_payment.get('expected_date')))
         )
 
     controls: list[ft.Control] = [
         progress_header(5),
         step_title(
-            "Your starting picture",
-            "This is an estimate built from what you told us.",
+            t('Your starting picture'),
+            t('This is an estimate built from what you told us.'),
         ),
         card(
             ft.Column(
-                spacing=18,
+                spacing=SPACE_L,
                 controls=[
-                    _figure("Available now", money(overview.get("available_now"), currency), True),
+                    _figure(t('Available now'), money(overview.get("available_now"), currency), True),
                     ft.Divider(color=BORDER),
                     _figure(
-                        "Projected after known events",
+                        t('Projected after known events'),
                         money(overview.get("projected_balance"), currency),
                         True,
                     ),
-                    ft.Text(next_label, size=13, color=MUTED),
+                    ft.Text(next_label, size=BODY_SM, color=MUTED),
                     ft.Divider(color=BORDER),
                     ft.Row(
                         spacing=16,
@@ -749,11 +778,11 @@ def starting_picture_view(page: ft.Page, app, overview: dict) -> ft.View:
                             ft.Column(
                                 expand=True,
                                 controls=[
-                                    _figure("Before your next", "expected payment"),
+                                    _figure(t('Before your next'), t("expected payment")),
                                 ],
                             ),
                             _figure(
-                                "Essential commitments",
+                                t('Essential commitments'),
                                 money(overview.get("essential_commitments"), currency),
                             ),
                         ],
@@ -769,12 +798,11 @@ def starting_picture_view(page: ft.Page, app, overview: dict) -> ft.View:
                 ft.Column(
                     spacing=8,
                     controls=[
-                        ft.Text("Savings goal", size=12, weight=ft.FontWeight.W_600, color=INK),
-                        ft.Text(goals[0].get("name") or "Goal", size=15, color=INK),
+                        ft.Text(t('Savings goal'), size=BODY_SM, weight=ft.FontWeight.W_600, color=INK),
+                        ft.Text(goals[0].get("name") or t('Goal'), size=INPUT_SIZE, color=INK),
                         ft.Text(
-                            f"{money(goals[0].get('saved_amount'), currency)} of "
-                            f"{money(goals[0].get('target_amount'), currency)}",
-                            size=13,
+                            t('{v0} of {v1}', v0=money(goals[0].get('saved_amount'), currency), v1=money(goals[0].get('target_amount'), currency)),
+                            size=BODY_SM,
                             color=MUTED,
                         ),
                     ],
@@ -784,8 +812,7 @@ def starting_picture_view(page: ft.Page, app, overview: dict) -> ft.View:
 
     controls.append(
         note(
-            "Your forecast is an estimate. It updates as you add payments and "
-            "expenses, so nothing here is locked in."
+            t('Your forecast is an estimate. It updates as you add payments and expenses, so nothing here is locked in.')
         )
     )
 
@@ -804,11 +831,11 @@ def starting_picture_view(page: ft.Page, app, overview: dict) -> ft.View:
             ft.Container(
                 padding=ft.Padding.symmetric(horizontal=8),
                 content=ft.Column(
-                    spacing=18,
+                    spacing=SPACE_L,
                     controls=[
                         *controls,
                         primary_button(
-                            "Go to my dashboard",
+                            t('Go to my dashboard'),
                             lambda e: page.run_task(app.open_dashboard),
                             expand=True,
                         ),
